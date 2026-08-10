@@ -1,0 +1,41 @@
+# ============================================================
+#  RKDYIPTV — Cloudflare Pages Configuration
+#  File: /wrangler.toml  (project root)
+# ============================================================
+
+name = "rkdyiptv"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "."
+
+# ── Environment Variables (Default/Production) ──
+[vars]
+ENVIRONMENT = "production"
+SITE_NAME = "RKDYIPTV"
+
+# ── KV Namespace Binding (Default/Production) ──
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "ad182ef16bc242feb4f1bc2825b8eeb3"
+
+# ============================================================
+#  PREVIEW ENVIRONMENT
+# ============================================================
+[env.preview.vars]
+ENVIRONMENT = "preview"
+SITE_NAME = "RKDYIPTV-Preview"
+
+[[env.preview.kv_namespaces]]
+binding = "TOKENS"
+id = "ad182ef16bc242feb4f1bc2825b8eeb3"
+
+# ============================================================
+#  PRODUCTION ENVIRONMENT
+# ============================================================
+[env.production.vars]
+ENVIRONMENT = "production"
+SITE_NAME = "RKDYIPTV"
+
+[[env.production.kv_namespaces]]
+binding = "TOKENS"
+id = "ad182ef16bc242feb4f1bc2825b8eeb3"
