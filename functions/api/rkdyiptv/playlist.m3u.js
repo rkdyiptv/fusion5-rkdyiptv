@@ -1,7 +1,7 @@
 // ============================================================
-//  RKDYIPTV FUSION5 — Playlist with VOD Support
+//  RKDYIPTV FUSION5 — Playlist with VOD (Movies)
 //  File: functions/api/rkdyiptv/playlist.m3u.js
-//  Features: Live TV + Movies + Series in single playlist
+//  Features: Live TV + Movies in single playlist
 // ============================================================
 
 const PORTAL_CONFIG = {
@@ -16,14 +16,18 @@ const PORTAL_CONFIG = {
 const TOKEN_WINDOW    = 24 * 60 * 60 * 1000;
 const STALKER_TOKEN_DURATION = 60 * 60 * 1000;
 const CACHE_DURATION  = 10 * 60 * 1000;
-const VOD_CACHE_DURATION = 30 * 60 * 1000; // VOD 30 min cache
+const VOD_CACHE_DURATION = 60 * 60 * 1000; // VOD 1 hour cache
 const TELEGRAM_URL    = 'https://t.me/rkdyiptv';
 const DEFAULT_LOGO    = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
 const DEFAULT_MOVIE_LOGO = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
-const DEFAULT_SERIES_LOGO = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
 const RATE_WINDOW     = 60 * 60 * 1000;
-const MAX_PLAYLIST    = 300;
-const MAX_STREAM      = 10000;
+const MAX_PLAYLIST    = 30;
+const MAX_STREAM      = 1000;
+
+// VOD Settings
+const VOD_MAX_CATEGORIES = 30;   // Kitni categories fetch karni hain
+const VOD_PAGES_PER_CAT = 2;      // Har category se kitne pages (14 movies per page)
+const VOD_BATCH_SIZE = 5;         // Parallel fetch batch size
 
 let authToken     = null;
 let tokenTime     = null;
@@ -31,8 +35,6 @@ let cachedPlaylist = null;
 let cacheTime     = null;
 let cachedVOD     = null;
 let vodCacheTime  = null;
-let cachedSeries  = null;
-let seriesCacheTime = null;
 const store       = new Map();
 
 // ============================================================
@@ -58,7 +60,7 @@ async function computeDeviceFingerprint(request, SECRET_KEY) {
 }
 
 // ============================================================
-//  ACCESS CHECK (Same as Fusion4)
+//  ACCESS CHECK
 // ============================================================
 function checkAccess(request) {
   const ua = (request.headers.get('user-agent') || '').toLowerCase();
@@ -159,7 +161,7 @@ ${TELEGRAM_URL}
 }
 
 // ============================================================
-//  RATE LIMIT (Same as Fusion4)
+//  RATE LIMIT
 // ============================================================
 function checkRateLimit(ip, type) {
   const now = Date.now();
@@ -188,7 +190,7 @@ function getClientIP(request) {
     request.headers.get('x-real-ip') || 'unknown';
 }
 // ============================================================
-//  STREAM SIGNING (Same as Fusion4 + VOD support)
+//  STREAM SIGNING
 // ============================================================
 function getTimeSlot(time) {
   return Math.floor((time || Date.now()) / TOKEN_WINDOW);
@@ -229,7 +231,7 @@ function extractChannelId(cmd) {
 }
 
 // ============================================================
-//  STALKER PORTAL (Base functions - same as Fusion4)
+//  STALKER PORTAL
 // ============================================================
 function getStalkerHeaders(token = null) {
   const h = {
@@ -264,7 +266,7 @@ async function setupProfile(token) {
 }
 
 // ============================================================
-//  LIVE TV FUNCTIONS (Same as Fusion4)
+//  LIVE TV FUNCTIONS
 // ============================================================
 async function getCategories(token) {
   const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=itv&action=get_genres&JsHttpRequest=1-xml`;
@@ -299,7 +301,7 @@ async function getRealStreamUrl(token, channelId) {
 }
 
 // ============================================================
-//  🎬 VOD (MOVIES) FUNCTIONS — NEW in Fusion5
+//  🎬 VOD (MOVIES) FUNCTIONS
 // ============================================================
 async function getVODCategories(token) {
   const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
@@ -308,32 +310,41 @@ async function getVODCategories(token) {
   let data;
   try { data = JSON.parse(text); } catch { return {}; }
   const map = {};
-  if (data.js && Array.isArray(data.js)) data.js.forEach(c => { map[c.id] = c.title; });
+  if (data.js && Array.isArray(data.js)) {
+    data.js.forEach(c => {
+      // Skip "All" category (id: *) to avoid duplicates
+      if (c.id && c.id !== '*' && c.title) {
+        map[c.id] = c.title;
+      }
+    });
+  }
   return map;
 }
 
-async function getVODByCategory(token, categoryId) {
+async function getVODByCategory(token, categoryId, maxPages = VOD_PAGES_PER_CAT) {
   const allMovies = [];
-  let page = 1;
-  const maxPages = 20; // Safety limit
   
-  while (page <= maxPages) {
-    const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
-    const res = await fetch(url, { headers: getStalkerHeaders(token) });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); } catch { break; }
-    
-    if (!data.js?.data || !Array.isArray(data.js.data) || data.js.data.length === 0) break;
-    
-    allMovies.push(...data.js.data);
-    
-    const totalItems = parseInt(data.js.total_items || 0);
-    const maxPageItems = parseInt(data.js.max_page_items || 14);
-    const totalPages = Math.ceil(totalItems / maxPageItems);
-    
-    if (page >= totalPages) break;
-    page++;
+  for (let page = 1; page <= maxPages; page++) {
+    try {
+      const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
+      const res = await fetch(url, { headers: getStalkerHeaders(token) });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { break; }
+      
+      if (!data.js?.data || !Array.isArray(data.js.data) || data.js.data.length === 0) break;
+      
+      allMovies.push(...data.js.data);
+      
+      const totalItems = parseInt(data.js.total_items || 0);
+      const maxPageItems = parseInt(data.js.max_page_items || 14);
+      const totalPages = Math.ceil(totalItems / maxPageItems);
+      
+      if (page >= totalPages) break;
+    } catch (err) {
+      console.error(`[VOD] Cat ${categoryId} page ${page} failed:`, err.message);
+      break;
+    }
   }
   
   return allMovies;
@@ -341,11 +352,16 @@ async function getVODByCategory(token, categoryId) {
 
 async function getAllVOD(token, catMap) {
   const allMovies = [];
-  const categoryIds = Object.keys(catMap).filter(id => id !== '*' && id !== '0');
+  const categoryIds = Object.keys(catMap);
   
-  // Fetch in batches of 3 to avoid overwhelming portal
-  for (let i = 0; i < categoryIds.length; i += 3) {
-    const batch = categoryIds.slice(i, i + 3);
+  // Limit categories to avoid worker timeout
+  const limitedCategoryIds = categoryIds.slice(0, VOD_MAX_CATEGORIES);
+  
+  console.log(`[VOD] Fetching ${limitedCategoryIds.length} categories (of ${categoryIds.length} total)`);
+  
+  // Fetch in batches
+  for (let i = 0; i < limitedCategoryIds.length; i += VOD_BATCH_SIZE) {
+    const batch = limitedCategoryIds.slice(i, i + VOD_BATCH_SIZE);
     const results = await Promise.all(
       batch.map(catId => 
         getVODByCategory(token, catId).catch(err => {
@@ -363,96 +379,8 @@ async function getAllVOD(token, catMap) {
     });
   }
   
+  console.log(`[VOD] Total movies fetched: ${allMovies.length}`);
   return allMovies;
-}
-
-async function getVODStreamUrl(token, movieId, cmd) {
-  const useCmd = cmd || `/media/file_${movieId}.mpg`;
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=create_link&cmd=${encodeURIComponent(useCmd)}&series=0&forced_storage=0&disable_ad=0&download=0&force_ch_link_check=0&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error('VOD stream parse failed'); }
-  if (!data.js?.cmd) throw new Error('No VOD stream URL');
-  return data.js.cmd.replace('ffmpeg ', '').replace('ffrt ', '').trim();
-}
-
-// ============================================================
-//  📺 SERIES FUNCTIONS — NEW in Fusion5
-// ============================================================
-async function getSeriesCategories(token) {
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=series&action=get_categories&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { return {}; }
-  const map = {};
-  if (data.js && Array.isArray(data.js)) data.js.forEach(c => { map[c.id] = c.title; });
-  return map;
-}
-
-async function getSeriesByCategory(token, categoryId) {
-  const allSeries = [];
-  let page = 1;
-  const maxPages = 20;
-  
-  while (page <= maxPages) {
-    const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=series&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
-    const res = await fetch(url, { headers: getStalkerHeaders(token) });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); } catch { break; }
-    
-    if (!data.js?.data || !Array.isArray(data.js.data) || data.js.data.length === 0) break;
-    
-    allSeries.push(...data.js.data);
-    
-    const totalItems = parseInt(data.js.total_items || 0);
-    const maxPageItems = parseInt(data.js.max_page_items || 14);
-    const totalPages = Math.ceil(totalItems / maxPageItems);
-    
-    if (page >= totalPages) break;
-    page++;
-  }
-  
-  return allSeries;
-}
-
-async function getAllSeries(token, catMap) {
-  const allSeries = [];
-  const categoryIds = Object.keys(catMap).filter(id => id !== '*' && id !== '0');
-  
-  for (let i = 0; i < categoryIds.length; i += 3) {
-    const batch = categoryIds.slice(i, i + 3);
-    const results = await Promise.all(
-      batch.map(catId =>
-        getSeriesByCategory(token, catId).catch(err => {
-          console.error(`[SERIES] Cat ${catId} failed:`, err.message);
-          return [];
-        })
-      )
-    );
-    results.forEach((series, idx) => {
-      const catId = batch[idx];
-      series.forEach(s => {
-        s._categoryTitle = catMap[catId] || 'Series';
-      });
-      allSeries.push(...series);
-    });
-  }
-  
-  return allSeries;
-}
-
-async function getSeriesStreamUrl(token, seriesId, cmd, season, episode) {
-  const useCmd = cmd || `/media/file.mkv`;
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=create_link&cmd=${encodeURIComponent(useCmd)}&series=${episode || 1}&forced_storage=0&disable_ad=0&download=0&force_ch_link_check=0&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error('Series stream parse failed'); }
-  if (!data.js?.cmd) throw new Error('No Series stream URL');
-  return data.js.cmd.replace('ffmpeg ', '').replace('ffrt ', '').trim();
 }
 // ============================================================
 //  ENTRY POINT
@@ -495,7 +423,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  STREAM ACTION — Live TV / VOD / Series
+  //  STREAM ACTION — Live TV / VOD
   // ============================================================
   if (action === 'stream') {
     if (!checkRateLimit(ip, 'stream').allowed) return accessDeniedResponse(commonHeaders);
@@ -516,10 +444,6 @@ export async function onRequest(context) {
       if (streamType === 'vod') {
         const cmd = params.get('c') ? decodeURIComponent(params.get('c')) : null;
         realUrl = await getVODStreamUrl(token, channelId, cmd);
-      } else if (streamType === 'series') {
-        const cmd = params.get('c') ? decodeURIComponent(params.get('c')) : null;
-        const ep = params.get('ep') || 1;
-        realUrl = await getSeriesStreamUrl(token, channelId, cmd, null, ep);
       } else {
         // Live TV (default)
         realUrl = await getRealStreamUrl(token, channelId);
@@ -533,10 +457,6 @@ export async function onRequest(context) {
         if (streamType === 'vod') {
           const cmd = params.get('c') ? decodeURIComponent(params.get('c')) : null;
           realUrl = await getVODStreamUrl(token, channelId, cmd);
-        } else if (streamType === 'series') {
-          const cmd = params.get('c') ? decodeURIComponent(params.get('c')) : null;
-          const ep = params.get('ep') || 1;
-          realUrl = await getSeriesStreamUrl(token, channelId, cmd, null, ep);
         } else {
           realUrl = await getRealStreamUrl(token, channelId);
         }
@@ -621,7 +541,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  BUILD PLAYLIST — Live TV + Movies + Series
+  //  BUILD PLAYLIST — Live TV + Movies
   // ============================================================
   try {
     const cacheNow = Date.now();
@@ -665,35 +585,19 @@ export async function onRequest(context) {
     let allMovies = [];
     if (cachedVOD && vodCacheTime && (cacheNow - vodCacheTime) < VOD_CACHE_DURATION) {
       allMovies = cachedVOD;
-      console.log('[VOD CACHE] Using cached movies');
+      console.log(`[VOD CACHE] Using ${allMovies.length} cached movies`);
     } else {
       try {
         const vodCatMap = await getVODCategories(token);
+        console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories`);
         allMovies = await getAllVOD(token, vodCatMap);
-        cachedVOD = allMovies;
-        vodCacheTime = cacheNow;
-        console.log(`[VOD] Fetched ${allMovies.length} movies`);
+        if (allMovies.length > 0) {
+          cachedVOD = allMovies;
+          vodCacheTime = cacheNow;
+        }
       } catch (err) {
         console.error('[VOD ERROR]', err.message);
         allMovies = cachedVOD || [];
-      }
-    }
-
-    // ── Fetch SERIES with cache ──
-    let allSeries = [];
-    if (cachedSeries && seriesCacheTime && (cacheNow - seriesCacheTime) < VOD_CACHE_DURATION) {
-      allSeries = cachedSeries;
-      console.log('[SERIES CACHE] Using cached series');
-    } else {
-      try {
-        const seriesCatMap = await getSeriesCategories(token);
-        allSeries = await getAllSeries(token, seriesCatMap);
-        cachedSeries = allSeries;
-        seriesCacheTime = cacheNow;
-        console.log(`[SERIES] Fetched ${allSeries.length} series`);
-      } catch (err) {
-        console.error('[SERIES ERROR]', err.message);
-        allSeries = cachedSeries || [];
       }
     }
 
@@ -701,7 +605,7 @@ export async function onRequest(context) {
     //  BUILD M3U
     // ============================================================
     let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
-    let liveCount = 0, movieCount = 0, seriesCount = 0;
+    let liveCount = 0, movieCount = 0;
 
     // ─── 📺 LIVE TV ───
     for (const ch of liveChannels) {
@@ -729,7 +633,7 @@ export async function onRequest(context) {
       const name = (movie.name || 'Unknown Movie').trim();
       const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_MOVIE_LOGO;
       const category = movie._categoryTitle || 'Movies';
-      const group = `🎬 Movies - ${category}`;
+      const group = `🎬 ${category}`;
       const movieId = movie.id || '';
       const cmd = movie.cmd || '';
 
@@ -741,60 +645,20 @@ export async function onRequest(context) {
       const encodedCmd = cmd ? '&c=' + encodeURIComponent(cmd) : '';
       const streamUrl = `${myBase}?action=stream&d=${signedToken}${encodedCmd}`;
       
-      // Add year, rating info if available
+      // Add year if available
       let displayName = name;
-      if (movie.year) displayName += ` (${movie.year})`;
+      if (movie.year && !name.includes(movie.year)) {
+        displayName = `${name} (${movie.year})`;
+      }
       
       m3u += `#EXTINF:-1 tvg-id="movie_${movieId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
       m3u += `${streamUrl}\n`;
       movieCount++;
     }
 
-    // ─── 📺 SERIES ───
-    for (const series of allSeries) {
-      const name = (series.name || 'Unknown Series').trim();
-      const logo = (series.screenshot_uri || series.pic || '').trim() || DEFAULT_SERIES_LOGO;
-      const category = series._categoryTitle || 'Series';
-      const group = `📺 Series - ${category}`;
-      const seriesId = series.id || '';
-      const cmd = series.cmd || '';
+    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}...`);
 
-      if (!seriesId) continue;
-
-      // Series may have multiple episodes
-      const episodes = series.series || [1];
-      
-      if (Array.isArray(episodes) && episodes.length > 0) {
-        // Multi-episode series
-        for (const ep of episodes) {
-          const signedToken = await signChannelId(seriesId, SECRET_KEY, 'series');
-          if (!signedToken) continue;
-
-          const encodedCmd = cmd ? '&c=' + encodeURIComponent(cmd) : '';
-          const streamUrl = `${myBase}?action=stream&d=${signedToken}${encodedCmd}&ep=${ep}`;
-          
-          const displayName = `${name} - Episode ${ep}`;
-          m3u += `#EXTINF:-1 tvg-id="series_${seriesId}_${ep}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
-          m3u += `${streamUrl}\n`;
-          seriesCount++;
-        }
-      } else {
-        // Single episode/movie style series
-        const signedToken = await signChannelId(seriesId, SECRET_KEY, 'series');
-        if (!signedToken) continue;
-
-        const encodedCmd = cmd ? '&c=' + encodeURIComponent(cmd) : '';
-        const streamUrl = `${myBase}?action=stream&d=${signedToken}${encodedCmd}`;
-        
-        m3u += `#EXTINF:-1 tvg-id="series_${seriesId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${name}\n`;
-        m3u += `${streamUrl}\n`;
-        seriesCount++;
-      }
-    }
-
-    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} Series:${seriesCount} | token=${userToken.slice(0,8)}...`);
-
-    if (liveCount > 0 || movieCount > 0 || seriesCount > 0) {
+    if (liveCount > 0 || movieCount > 0) {
       cachedPlaylist = m3u;
       cacheTime = cacheNow;
     }
@@ -823,3 +687,15 @@ export async function onRequest(context) {
     return errorM3U('⚠️ Server Error', err.message, commonHeaders);
   }
 }
+async function getVODStreamUrl(token, movieId, cmd) {
+  const useCmd = cmd || `/media/file_${movieId}.mpg`;
+  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=create_link&cmd=${encodeURIComponent(useCmd)}&series=0&forced_storage=0&disable_ad=0&download=0&force_ch_link_check=0&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(token) });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error('VOD stream parse failed'); }
+  if (!data.js?.cmd) throw new Error('No VOD stream URL');
+  return data.js.cmd.replace('ffmpeg ', '').replace('ffrt ', '').trim();
+}
+
+
