@@ -113,7 +113,7 @@ async function doLogin(e) {
     });
     const data = await res.json();
     if (data.success) {
-      window.location.href = '/dashboard';
+      window.location.href = '/admin/dashboard';
     } else {
       errorBox.textContent = '❌ ' + (data.error || 'Login failed');
     }
