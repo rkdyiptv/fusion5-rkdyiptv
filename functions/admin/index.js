@@ -1,6 +1,6 @@
 // ============================================================
-//  RKDYIPTV — Admin Login Page
-//  File: functions/admin/index.js
+//  RKDYIPTV — Admin Login Page (Root Level)
+//  File: functions/admin.js
 //  Route: /admin
 // ============================================================
 
@@ -72,7 +72,6 @@ export async function onRequest(context) {
     font-size: 15px;
     margin-top: 10px;
   }
-  .btn:hover { transform: translateY(-1px); }
   .error {
     color: #ff5555;
     font-size: 13px;
@@ -114,7 +113,7 @@ async function doLogin(e) {
     });
     const data = await res.json();
     if (data.success) {
-      window.location.href = '/admin/dashboard';
+      window.location.href = '/dashboard';
     } else {
       errorBox.textContent = '❌ ' + (data.error || 'Login failed');
     }
