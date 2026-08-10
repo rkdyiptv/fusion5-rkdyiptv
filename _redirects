@@ -1,0 +1,13 @@
+# ============================================================
+#  RKDYIPTV — URL Redirects & Aliases
+#  File: /_redirects  (project root)
+# ============================================================
+
+# Short aliases for playlist
+/playlist         /api/rkdyiptv/playlist.m3u    200
+/get              /api/rkdyiptv/playlist.m3u    200
+/playlist.m3u     /api/rkdyiptv/playlist.m3u    200
+
+# Admin panel shortcuts
+/login            /admin                         200
+/panel            /admin/dashboard               302
