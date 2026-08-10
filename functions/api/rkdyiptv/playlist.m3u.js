@@ -1,7 +1,7 @@
 // ============================================================
-//  RKDYIPTV FUSION5 — Live TV Playlist Only
+//  RKDYIPTV FUSION5 — Live TV + VOD (Single Playlist)
 //  File: functions/api/rkdyiptv/playlist.m3u.js
-//  Note: Movies use separate URL: /movie/RKDYIPTV/rkdy/{id}.{ext}?token=xxx
+//  Movies use: /movie/RKDYIPTV/rkdy/{id}.mp4?token={random}
 // ============================================================
 
 const PORTAL_CONFIG = {
@@ -16,16 +16,24 @@ const PORTAL_CONFIG = {
 const TOKEN_WINDOW    = 24 * 60 * 60 * 1000;
 const STALKER_TOKEN_DURATION = 60 * 60 * 1000;
 const CACHE_DURATION  = 10 * 60 * 1000;
+const VOD_CACHE_DURATION = 60 * 60 * 1000;
 const TELEGRAM_URL    = 'https://t.me/rkdyiptv';
 const DEFAULT_LOGO    = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
 const RATE_WINDOW     = 60 * 60 * 1000;
 const MAX_PLAYLIST    = 30;
 const MAX_STREAM      = 1000;
 
+// VOD Settings
+const VOD_MAX_CATEGORIES = 30;
+const VOD_PAGES_PER_CAT = 2;
+const VOD_BATCH_SIZE = 5;
+
 let authToken     = null;
 let tokenTime     = null;
 let cachedPlaylist = null;
 let cacheTime     = null;
+let cachedVOD     = null;
+let vodCacheTime  = null;
 const store       = new Map();
 
 // ============================================================
@@ -142,8 +150,6 @@ function errorM3U(title, message, commonHeaders) {
 ${TELEGRAM_URL}
 #EXTINF:-1 tvg-logo="${DEFAULT_LOGO}" group-title="⚠️ RKDYIPTV",${message}
 ${TELEGRAM_URL}
-#EXTINF:-1 tvg-logo="${DEFAULT_LOGO}" group-title="⚠️ RKDYIPTV",Contact @RKDYIPTV
-${TELEGRAM_URL}
 `;
   return new Response(m3u, {
     status: 403,
@@ -180,9 +186,8 @@ function getClientIP(request) {
     request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
     request.headers.get('x-real-ip') || 'unknown';
 }
-
 // ============================================================
-//  STREAM SIGNING
+//  STREAM SIGNING (for Live TV)
 // ============================================================
 function getTimeSlot(time) {
   return Math.floor((time || Date.now()) / TOKEN_WINDOW);
@@ -222,7 +227,16 @@ function extractChannelId(cmd) {
 }
 
 // ============================================================
-//  STALKER
+//  RANDOM TOKEN GENERATOR (for movie URLs)
+// ============================================================
+function generateRandomToken() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ============================================================
+//  STALKER PORTAL
 // ============================================================
 function getStalkerHeaders(token = null) {
   const h = {
@@ -256,6 +270,9 @@ async function setupProfile(token) {
   await fetch(url, { headers: getStalkerHeaders(token) });
 }
 
+// ============================================================
+//  LIVE TV FUNCTIONS
+// ============================================================
 async function getCategories(token) {
   const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=itv&action=get_genres&JsHttpRequest=1-xml`;
   const res = await fetch(url, { headers: getStalkerHeaders(token) });
@@ -287,8 +304,88 @@ async function getRealStreamUrl(token, channelId) {
   if (!data.js?.cmd) throw new Error('No stream URL');
   return data.js.cmd.replace('ffmpeg ', '').replace('ffrt ', '');
 }
+
 // ============================================================
-//  ENTRY POINT — Live TV Playlist Only
+//  🎬 VOD (MOVIES) FUNCTIONS
+// ============================================================
+async function getVODCategories(token) {
+  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(token) });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { return {}; }
+  const map = {};
+  if (data.js && Array.isArray(data.js)) {
+    data.js.forEach(c => {
+      if (c.id && c.id !== '*' && c.title) {
+        map[c.id] = c.title;
+      }
+    });
+  }
+  return map;
+}
+
+async function getVODByCategory(token, categoryId, maxPages = VOD_PAGES_PER_CAT) {
+  const allMovies = [];
+  
+  for (let page = 1; page <= maxPages; page++) {
+    try {
+      const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
+      const res = await fetch(url, { headers: getStalkerHeaders(token) });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { break; }
+      
+      if (!data.js?.data || !Array.isArray(data.js.data) || data.js.data.length === 0) break;
+      
+      allMovies.push(...data.js.data);
+      
+      const totalItems = parseInt(data.js.total_items || 0);
+      const maxPageItems = parseInt(data.js.max_page_items || 14);
+      const totalPages = Math.ceil(totalItems / maxPageItems);
+      
+      if (page >= totalPages) break;
+    } catch (err) {
+      console.error(`[VOD] Cat ${categoryId} page ${page} failed:`, err.message);
+      break;
+    }
+  }
+  
+  return allMovies;
+}
+
+async function getAllVOD(token, catMap) {
+  const allMovies = [];
+  const categoryIds = Object.keys(catMap);
+  const limitedCategoryIds = categoryIds.slice(0, VOD_MAX_CATEGORIES);
+  
+  console.log(`[VOD] Fetching ${limitedCategoryIds.length} categories`);
+  
+  for (let i = 0; i < limitedCategoryIds.length; i += VOD_BATCH_SIZE) {
+    const batch = limitedCategoryIds.slice(i, i + VOD_BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(catId => 
+        getVODByCategory(token, catId).catch(err => {
+          console.error(`[VOD] Cat ${catId} failed:`, err.message);
+          return [];
+        })
+      )
+    );
+    results.forEach((movies, idx) => {
+      const catId = batch[idx];
+      movies.forEach(m => {
+        m._categoryTitle = catMap[catId] || 'Movies';
+      });
+      allMovies.push(...movies);
+    });
+  }
+  
+  console.log(`[VOD] Total movies fetched: ${allMovies.length}`);
+  return allMovies;
+}
+
+// ============================================================
+//  ENTRY POINT
 // ============================================================
 export async function onRequest(context) {
   const { request, env } = context;
@@ -296,6 +393,7 @@ export async function onRequest(context) {
 
   const reqUrl = new URL(request.url);
   const myBase = `${reqUrl.origin}${reqUrl.pathname}`;
+  const hostBase = reqUrl.origin;  // https://fusion5-rkdyiptv.pages.dev
 
   const commonHeaders = {
     'Access-Control-Allow-Origin': '*',
@@ -328,7 +426,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  STREAM ACTION — Live TV
+  //  STREAM ACTION — Live TV Only (movies use /movie/ URL)
   // ============================================================
   if (action === 'stream') {
     if (!checkRateLimit(ip, 'stream').allowed) return accessDeniedResponse(commonHeaders);
@@ -429,7 +527,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  BUILD PLAYLIST — Live TV Only
+  //  BUILD PLAYLIST — Live TV + Movies (single playlist)
   // ============================================================
   try {
     const cacheNow = Date.now();
@@ -449,25 +547,56 @@ export async function onRequest(context) {
     let token = await getStalkerToken();
     await setupProfile(token);
 
-    let catMap, channels;
+    // ── Fetch LIVE TV ──
+    let liveCatMap, liveChannels;
     try {
-      [catMap, channels] = await Promise.all([getCategories(token), getChannels(token)]);
-      if (!Array.isArray(channels) || channels.length === 0) throw new Error('Empty channel list');
+      [liveCatMap, liveChannels] = await Promise.all([
+        getCategories(token),
+        getChannels(token)
+      ]);
+      if (!Array.isArray(liveChannels) || liveChannels.length === 0) throw new Error('Empty live list');
     } catch (innerErr) {
       authToken = null;
       tokenTime = null;
       token = await getStalkerToken();
       await setupProfile(token);
-      [catMap, channels] = await Promise.all([getCategories(token), getChannels(token)]);
+      [liveCatMap, liveChannels] = await Promise.all([
+        getCategories(token),
+        getChannels(token)
+      ]);
     }
 
-    let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
-    let count = 0;
+    // ── Fetch VOD (Movies) with cache ──
+    let allMovies = [];
+    if (cachedVOD && vodCacheTime && (cacheNow - vodCacheTime) < VOD_CACHE_DURATION) {
+      allMovies = cachedVOD;
+      console.log(`[VOD CACHE] Using ${allMovies.length} cached movies`);
+    } else {
+      try {
+        const vodCatMap = await getVODCategories(token);
+        console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories`);
+        allMovies = await getAllVOD(token, vodCatMap);
+        if (allMovies.length > 0) {
+          cachedVOD = allMovies;
+          vodCacheTime = cacheNow;
+        }
+      } catch (err) {
+        console.error('[VOD ERROR]', err.message);
+        allMovies = cachedVOD || [];
+      }
+    }
 
-    for (const ch of channels) {
+    // ============================================================
+    //  BUILD M3U
+    // ============================================================
+    let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
+    let liveCount = 0, movieCount = 0;
+
+    // ─── 📺 LIVE TV ───
+    for (const ch of liveChannels) {
       const name = (ch.name || 'Unknown').trim();
       const logo = (ch.logo && ch.logo.trim() !== '') ? ch.logo : DEFAULT_LOGO;
-      const group = catMap[ch.tv_genre_id] || 'General';
+      const group = liveCatMap[ch.tv_genre_id] || 'General';
       const cmd = ch.cmd || '';
       const chId = ch.id || '';
 
@@ -481,12 +610,38 @@ export async function onRequest(context) {
       const streamUrl = `${myBase}?action=stream&d=${signedToken}`;
       m3u += `#EXTINF:-1 tvg-id="${chId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${name}\n`;
       m3u += `${streamUrl}\n`;
-      count++;
+      liveCount++;
     }
 
-    console.log(`[PLAYLIST OK] ${count} channels | token=${userToken.slice(0,8)}...`);
+    // ─── 🎬 MOVIES (VOD) — /movie/RKDYIPTV/rkdy/{id}.mp4?token=xxx ───
+    for (const movie of allMovies) {
+      const name = (movie.name || 'Unknown Movie').trim();
+      const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_LOGO;
+      const category = movie._categoryTitle || 'Movies';
+      const group = category;  // Just use category name (already has language prefix like "HINDI | LATEST MOVIES")
+      const movieId = movie.id || '';
 
-    if (count > 0) {
+      if (!movieId) continue;
+
+      // Generate random token for this movie URL
+      const randomToken = generateRandomToken();
+      
+      // Xtream Codes style URL — player will detect as VOD
+      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${randomToken}`;
+      
+      let displayName = name;
+      if (movie.year && !name.includes(movie.year)) {
+        displayName = `${name} (${movie.year})`;
+      }
+      
+      m3u += `#EXTINF:-1 tvg-id="movie_${movieId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
+      m3u += `${movieUrl}\n`;
+      movieCount++;
+    }
+
+    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}...`);
+
+    if (liveCount > 0 || movieCount > 0) {
       cachedPlaylist = m3u;
       cacheTime = cacheNow;
     }
