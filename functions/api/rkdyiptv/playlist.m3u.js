@@ -1,7 +1,7 @@
 // ============================================================
-//  RKDYIPTV FUSION5 — Playlist with VOD (Movies)
+//  RKDYIPTV FUSION5 — Live TV Playlist Only
 //  File: functions/api/rkdyiptv/playlist.m3u.js
-//  Features: Live TV + Movies in single playlist
+//  Note: Movies use separate URL: /movie/RKDYIPTV/rkdy/{id}.{ext}?token=xxx
 // ============================================================
 
 const PORTAL_CONFIG = {
@@ -16,25 +16,16 @@ const PORTAL_CONFIG = {
 const TOKEN_WINDOW    = 24 * 60 * 60 * 1000;
 const STALKER_TOKEN_DURATION = 60 * 60 * 1000;
 const CACHE_DURATION  = 10 * 60 * 1000;
-const VOD_CACHE_DURATION = 60 * 60 * 1000; // VOD 1 hour cache
 const TELEGRAM_URL    = 'https://t.me/rkdyiptv';
 const DEFAULT_LOGO    = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
-const DEFAULT_MOVIE_LOGO = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
 const RATE_WINDOW     = 60 * 60 * 1000;
 const MAX_PLAYLIST    = 30;
 const MAX_STREAM      = 1000;
-
-// VOD Settings
-const VOD_MAX_CATEGORIES = 30;   // Kitni categories fetch karni hain
-const VOD_PAGES_PER_CAT = 2;      // Har category se kitne pages (14 movies per page)
-const VOD_BATCH_SIZE = 5;         // Parallel fetch batch size
 
 let authToken     = null;
 let tokenTime     = null;
 let cachedPlaylist = null;
 let cacheTime     = null;
-let cachedVOD     = null;
-let vodCacheTime  = null;
 const store       = new Map();
 
 // ============================================================
@@ -189,6 +180,7 @@ function getClientIP(request) {
     request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
     request.headers.get('x-real-ip') || 'unknown';
 }
+
 // ============================================================
 //  STREAM SIGNING
 // ============================================================
@@ -196,12 +188,12 @@ function getTimeSlot(time) {
   return Math.floor((time || Date.now()) / TOKEN_WINDOW);
 }
 
-async function signChannelId(channelId, SECRET_KEY, type = 'live') {
+async function signChannelId(channelId, SECRET_KEY) {
   try {
     const slot = getTimeSlot();
     const exp = Date.now() + TOKEN_WINDOW;
-    const sig = (await hmacSha256(SECRET_KEY, channelId + '_' + type + '_' + slot)).slice(0, 20);
-    const payload = { i: String(channelId), t: type, e: exp, s: slot, h: sig };
+    const sig = (await hmacSha256(SECRET_KEY, channelId + '_' + slot)).slice(0, 20);
+    const payload = { i: String(channelId), e: exp, s: slot, h: sig };
     return btoa(JSON.stringify(payload))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   } catch { return null; }
@@ -215,11 +207,10 @@ async function verifyChannelToken(encoded, SECRET_KEY) {
     const payload = JSON.parse(atob(padded));
     if (!payload.i || !payload.e || !payload.s || !payload.h) return { valid: false };
     if (Date.now() > payload.e) return { valid: false };
-    const type = payload.t || 'live';
-    const cur = (await hmacSha256(SECRET_KEY, payload.i + '_' + type + '_' + getTimeSlot())).slice(0, 20);
-    const prev = (await hmacSha256(SECRET_KEY, payload.i + '_' + type + '_' + (getTimeSlot() - 1))).slice(0, 20);
+    const cur = (await hmacSha256(SECRET_KEY, payload.i + '_' + getTimeSlot())).slice(0, 20);
+    const prev = (await hmacSha256(SECRET_KEY, payload.i + '_' + (getTimeSlot() - 1))).slice(0, 20);
     if (payload.h !== cur && payload.h !== prev) return { valid: false };
-    return { valid: true, id: payload.i, type: type };
+    return { valid: true, id: payload.i };
   } catch { return { valid: false }; }
 }
 
@@ -231,7 +222,7 @@ function extractChannelId(cmd) {
 }
 
 // ============================================================
-//  STALKER PORTAL
+//  STALKER
 // ============================================================
 function getStalkerHeaders(token = null) {
   const h = {
@@ -265,9 +256,6 @@ async function setupProfile(token) {
   await fetch(url, { headers: getStalkerHeaders(token) });
 }
 
-// ============================================================
-//  LIVE TV FUNCTIONS
-// ============================================================
 async function getCategories(token) {
   const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=itv&action=get_genres&JsHttpRequest=1-xml`;
   const res = await fetch(url, { headers: getStalkerHeaders(token) });
@@ -299,91 +287,8 @@ async function getRealStreamUrl(token, channelId) {
   if (!data.js?.cmd) throw new Error('No stream URL');
   return data.js.cmd.replace('ffmpeg ', '').replace('ffrt ', '');
 }
-
 // ============================================================
-//  🎬 VOD (MOVIES) FUNCTIONS
-// ============================================================
-async function getVODCategories(token) {
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { return {}; }
-  const map = {};
-  if (data.js && Array.isArray(data.js)) {
-    data.js.forEach(c => {
-      // Skip "All" category (id: *) to avoid duplicates
-      if (c.id && c.id !== '*' && c.title) {
-        map[c.id] = c.title;
-      }
-    });
-  }
-  return map;
-}
-
-async function getVODByCategory(token, categoryId, maxPages = VOD_PAGES_PER_CAT) {
-  const allMovies = [];
-  
-  for (let page = 1; page <= maxPages; page++) {
-    try {
-      const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
-      const res = await fetch(url, { headers: getStalkerHeaders(token) });
-      const text = await res.text();
-      let data;
-      try { data = JSON.parse(text); } catch { break; }
-      
-      if (!data.js?.data || !Array.isArray(data.js.data) || data.js.data.length === 0) break;
-      
-      allMovies.push(...data.js.data);
-      
-      const totalItems = parseInt(data.js.total_items || 0);
-      const maxPageItems = parseInt(data.js.max_page_items || 14);
-      const totalPages = Math.ceil(totalItems / maxPageItems);
-      
-      if (page >= totalPages) break;
-    } catch (err) {
-      console.error(`[VOD] Cat ${categoryId} page ${page} failed:`, err.message);
-      break;
-    }
-  }
-  
-  return allMovies;
-}
-
-async function getAllVOD(token, catMap) {
-  const allMovies = [];
-  const categoryIds = Object.keys(catMap);
-  
-  // Limit categories to avoid worker timeout
-  const limitedCategoryIds = categoryIds.slice(0, VOD_MAX_CATEGORIES);
-  
-  console.log(`[VOD] Fetching ${limitedCategoryIds.length} categories (of ${categoryIds.length} total)`);
-  
-  // Fetch in batches
-  for (let i = 0; i < limitedCategoryIds.length; i += VOD_BATCH_SIZE) {
-    const batch = limitedCategoryIds.slice(i, i + VOD_BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map(catId => 
-        getVODByCategory(token, catId).catch(err => {
-          console.error(`[VOD] Cat ${catId} failed:`, err.message);
-          return [];
-        })
-      )
-    );
-    results.forEach((movies, idx) => {
-      const catId = batch[idx];
-      movies.forEach(m => {
-        m._categoryTitle = catMap[catId] || 'Movies';
-      });
-      allMovies.push(...movies);
-    });
-  }
-  
-  console.log(`[VOD] Total movies fetched: ${allMovies.length}`);
-  return allMovies;
-}
-// ============================================================
-//  ENTRY POINT
+//  ENTRY POINT — Live TV Playlist Only
 // ============================================================
 export async function onRequest(context) {
   const { request, env } = context;
@@ -423,7 +328,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  STREAM ACTION — Live TV / VOD
+  //  STREAM ACTION — Live TV
   // ============================================================
   if (action === 'stream') {
     if (!checkRateLimit(ip, 'stream').allowed) return accessDeniedResponse(commonHeaders);
@@ -433,42 +338,26 @@ export async function onRequest(context) {
     if (!verify.valid) return accessDeniedResponse(commonHeaders);
 
     const channelId = verify.id;
-    const streamType = verify.type || 'live';
 
     try {
       let token = await getStalkerToken();
       await setupProfile(token);
-      let realUrl;
+      let realUrl = await getRealStreamUrl(token, channelId);
 
-      // Route to correct stream handler based on type
-      if (streamType === 'vod') {
-        const cmd = params.get('c') ? decodeURIComponent(params.get('c')) : null;
-        realUrl = await getVODStreamUrl(token, channelId, cmd);
-      } else {
-        // Live TV (default)
-        realUrl = await getRealStreamUrl(token, channelId);
-      }
-
-      // Retry on failure
       if (realUrl.includes('localhost') || !realUrl.startsWith('http')) {
         authToken = null;
         token = await getStalkerToken();
         await setupProfile(token);
-        if (streamType === 'vod') {
-          const cmd = params.get('c') ? decodeURIComponent(params.get('c')) : null;
-          realUrl = await getVODStreamUrl(token, channelId, cmd);
-        } else {
-          realUrl = await getRealStreamUrl(token, channelId);
-        }
+        realUrl = await getRealStreamUrl(token, channelId);
       }
 
-      console.log(`[STREAM OK] Type:${streamType} ID:${channelId}`);
+      console.log(`[STREAM OK] ID:${channelId}`);
       return new Response(null, {
         status: 302,
         headers: { ...commonHeaders, 'Cache-Control': 'no-cache', 'Location': realUrl },
       });
     } catch (err) {
-      console.error(`[STREAM ERROR] Type:${streamType}`, err.message);
+      console.error('[STREAM ERROR]', err.message);
       authToken = null;
       tokenTime = null;
       return new Response(JSON.stringify({ error: err.message }), {
@@ -504,7 +393,6 @@ export async function onRequest(context) {
     return errorM3U('⏰ Token Expired', 'Contact admin for a new token', commonHeaders);
   }
 
-  // Device fingerprint
   const currentDevice = await computeDeviceFingerprint(request, SECRET_KEY);
 
   if (tokenData.device === null) {
@@ -541,12 +429,11 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  BUILD PLAYLIST — Live TV + Movies
+  //  BUILD PLAYLIST — Live TV Only
   // ============================================================
   try {
     const cacheNow = Date.now();
 
-    // Serve from cache if fresh
     if (cachedPlaylist && cacheTime && (cacheNow - cacheTime) < CACHE_DURATION && cachedPlaylist.includes('#EXTINF')) {
       console.log('[PLAYLIST CACHE] Serving');
       return new Response(cachedPlaylist, {
@@ -562,56 +449,25 @@ export async function onRequest(context) {
     let token = await getStalkerToken();
     await setupProfile(token);
 
-    // ── Fetch LIVE TV ──
-    let liveCatMap, liveChannels;
+    let catMap, channels;
     try {
-      [liveCatMap, liveChannels] = await Promise.all([
-        getCategories(token),
-        getChannels(token)
-      ]);
-      if (!Array.isArray(liveChannels) || liveChannels.length === 0) throw new Error('Empty live list');
+      [catMap, channels] = await Promise.all([getCategories(token), getChannels(token)]);
+      if (!Array.isArray(channels) || channels.length === 0) throw new Error('Empty channel list');
     } catch (innerErr) {
       authToken = null;
       tokenTime = null;
       token = await getStalkerToken();
       await setupProfile(token);
-      [liveCatMap, liveChannels] = await Promise.all([
-        getCategories(token),
-        getChannels(token)
-      ]);
+      [catMap, channels] = await Promise.all([getCategories(token), getChannels(token)]);
     }
 
-    // ── Fetch VOD (Movies) with cache ──
-    let allMovies = [];
-    if (cachedVOD && vodCacheTime && (cacheNow - vodCacheTime) < VOD_CACHE_DURATION) {
-      allMovies = cachedVOD;
-      console.log(`[VOD CACHE] Using ${allMovies.length} cached movies`);
-    } else {
-      try {
-        const vodCatMap = await getVODCategories(token);
-        console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories`);
-        allMovies = await getAllVOD(token, vodCatMap);
-        if (allMovies.length > 0) {
-          cachedVOD = allMovies;
-          vodCacheTime = cacheNow;
-        }
-      } catch (err) {
-        console.error('[VOD ERROR]', err.message);
-        allMovies = cachedVOD || [];
-      }
-    }
-
-    // ============================================================
-    //  BUILD M3U
-    // ============================================================
     let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
-    let liveCount = 0, movieCount = 0;
+    let count = 0;
 
-    // ─── 📺 LIVE TV ───
-    for (const ch of liveChannels) {
+    for (const ch of channels) {
       const name = (ch.name || 'Unknown').trim();
       const logo = (ch.logo && ch.logo.trim() !== '') ? ch.logo : DEFAULT_LOGO;
-      const group = liveCatMap[ch.tv_genre_id] || 'General';
+      const group = catMap[ch.tv_genre_id] || 'General';
       const cmd = ch.cmd || '';
       const chId = ch.id || '';
 
@@ -619,46 +475,18 @@ export async function onRequest(context) {
       const channelId = extractChannelId(cmd);
       if (!channelId) continue;
 
-      const signedToken = await signChannelId(channelId, SECRET_KEY, 'live');
+      const signedToken = await signChannelId(channelId, SECRET_KEY);
       if (!signedToken) continue;
 
       const streamUrl = `${myBase}?action=stream&d=${signedToken}`;
       m3u += `#EXTINF:-1 tvg-id="${chId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${name}\n`;
       m3u += `${streamUrl}\n`;
-      liveCount++;
+      count++;
     }
 
-    // ─── 🎬 MOVIES (VOD) ───
-    for (const movie of allMovies) {
-      const name = (movie.name || 'Unknown Movie').trim();
-      const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_MOVIE_LOGO;
-      const category = movie._categoryTitle || 'Movies';
-      const group = `🎬 ${category}`;
-      const movieId = movie.id || '';
-      const cmd = movie.cmd || '';
+    console.log(`[PLAYLIST OK] ${count} channels | token=${userToken.slice(0,8)}...`);
 
-      if (!movieId) continue;
-
-      const signedToken = await signChannelId(movieId, SECRET_KEY, 'vod');
-      if (!signedToken) continue;
-
-      const encodedCmd = cmd ? '&c=' + encodeURIComponent(cmd) : '';
-      const streamUrl = `${myBase}?action=stream&d=${signedToken}${encodedCmd}`;
-      
-      // Add year if available
-      let displayName = name;
-      if (movie.year && !name.includes(movie.year)) {
-        displayName = `${name} (${movie.year})`;
-      }
-      
-      m3u += `#EXTINF:-1 tvg-id="movie_${movieId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
-      m3u += `${streamUrl}\n`;
-      movieCount++;
-    }
-
-    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}...`);
-
-    if (liveCount > 0 || movieCount > 0) {
+    if (count > 0) {
       cachedPlaylist = m3u;
       cacheTime = cacheNow;
     }
@@ -687,15 +515,3 @@ export async function onRequest(context) {
     return errorM3U('⚠️ Server Error', err.message, commonHeaders);
   }
 }
-async function getVODStreamUrl(token, movieId, cmd) {
-  const useCmd = cmd || `/media/file_${movieId}.mpg`;
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=create_link&cmd=${encodeURIComponent(useCmd)}&series=0&forced_storage=0&disable_ad=0&download=0&force_ch_link_check=0&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error('VOD stream parse failed'); }
-  if (!data.js?.cmd) throw new Error('No VOD stream URL');
-  return data.js.cmd.replace('ffmpeg ', '').replace('ffrt ', '').trim();
-}
-
-
