@@ -1,0 +1,24 @@
+# ============================================================
+#  RKDYIPTV — Global Static Headers
+#  File: /_headers  (project root)
+# ============================================================
+
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer-when-downgrade
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  X-Robots-Tag: noindex, nofollow, noarchive, nosnippet
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+
+/api/rkdyiptv/playlist.m3u
+  Content-Type: application/x-mpegurl; charset=utf-8
+  Cache-Control: no-store, no-cache, must-revalidate
+  Pragma: no-cache
+
+/api/admin/*
+  Cache-Control: no-store
+  Content-Type: application/json
+
+/admin/*
+  Cache-Control: no-store
