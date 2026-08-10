@@ -1,0 +1,19 @@
+{
+  "name": "rkdyiptv-pages",
+  "version": "2.0.0",
+  "description": "RKDYIPTV — Cloudflare Pages with Admin Panel + Token System + Device Lock",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler pages dev .",
+    "deploy": "wrangler pages deploy ."
+  },
+  "keywords": [
+    "iptv",
+    "cloudflare-pages",
+    "stalker-portal",
+    "admin-panel",
+    "token-system"
+  ],
+  "author": "RKDYIPTV",
+  "license": "UNLICENSED"
+}
