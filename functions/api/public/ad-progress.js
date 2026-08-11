@@ -1,7 +1,7 @@
 // ============================================================
 //  RKDYIPTV — Public Ad Progress Tracker
 //  File: functions/api/public/ad-progress.js
-//  GET  -> start new ad-watch session
+//  GET  -> start new ad-watch session (blocked during cooldown)
 //  POST -> increment watched-ad count (server verified)
 // ============================================================
 
@@ -26,8 +26,24 @@ export async function onRequest(context) {
 
   // ── Start new session ──
   if (request.method === 'GET') {
-    const sessionId = generateSessionId();
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+
+    // Respect the 15-minute cooldown after a successful generation
+    const cooldownRaw = await env.TOKENS.get(`cooldown:${ip}`);
+    if (cooldownRaw) {
+      const cooldownExpiresAt = parseInt(cooldownRaw, 10);
+      const remainingMs = cooldownExpiresAt - Date.now();
+      if (remainingMs > 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          cooldown: true,
+          remainingMs,
+          error: 'Please wait before starting a new playlist request.',
+        }), { status: 429, headers: commonHeaders });
+      }
+    }
+
+    const sessionId = generateSessionId();
     const sessionData = { count: 0, createdAt: Date.now(), ip };
     await env.TOKENS.put(`adsession:${sessionId}`, JSON.stringify(sessionData), {
       expirationTtl: SESSION_TTL,
@@ -50,7 +66,7 @@ export async function onRequest(context) {
 
       const raw = await env.TOKENS.get(`adsession:${sessionId}`);
       if (!raw) {
-        return new Response(JSON.stringify({ success: false, error: 'Session expire ho gaya, page reload karo' }), {
+        return new Response(JSON.stringify({ success: false, error: 'Session expired, please reload the page' }), {
           status: 400, headers: commonHeaders,
         });
       }
