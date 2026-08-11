@@ -11,11 +11,42 @@ const FIXED_HOURS = 24;
 const MAX_TOKENS_PER_IP_PER_DAY = 5;
 const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
 const COOLDOWN_TTL_SECONDS = 900;   // 15 minutes
+const STATS_KEY = 'stats:playlists';
 
 function generateTokenId() {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function todayUTC() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+// Reads stats:playlists from KV, bumps total + today's count, writes it back.
+// Stored in KV (not in a code file) so it survives redeploys/edits and is
+// visible instantly to every request. KV has no atomic counter, so under
+// heavy simultaneous traffic two requests could rarely overwrite each
+// other's increment — fine at this scale, but not a hard guarantee.
+async function bumpPlaylistStats(env) {
+  const today = todayUTC();
+  let stats = { total: 0, date: today, todayCount: 0 };
+
+  const raw = await env.TOKENS.get(STATS_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      stats.total = parsed.total || 0;
+      stats.todayCount = parsed.date === today ? (parsed.todayCount || 0) : 0;
+    } catch (_) { /* fall back to defaults on corrupt data */ }
+  }
+
+  stats.total += 1;
+  stats.todayCount += 1;
+  stats.date = today;
+
+  await env.TOKENS.put(STATS_KEY, JSON.stringify(stats));
+  return stats;
 }
 
 export async function onRequest(context) {
@@ -116,10 +147,13 @@ export async function onRequest(context) {
     // start the 15-minute cooldown for this IP
     await env.TOKENS.put(cooldownKey, String(now + COOLDOWN_MS), { expirationTtl: COOLDOWN_TTL_SECONDS });
 
+    // bump the persistent total/today playlist counter (survives code edits/redeploys)
+    const stats = await bumpPlaylistStats(env);
+
     const url = new URL(request.url);
     const playlistUrl = `${url.origin}/api/rkdyiptv/playlist.m3u?token=${tokenId}`;
 
-    console.log(`[PUBLIC] Ad-gated token created: ${tokenId.slice(0,8)}...`);
+    console.log(`[PUBLIC] Ad-gated token created: ${tokenId.slice(0,8)}... (total=${stats.total}, today=${stats.todayCount})`);
 
     return new Response(JSON.stringify({
       success: true,
@@ -127,6 +161,8 @@ export async function onRequest(context) {
       playlistUrl,
       expiryAt,
       durationLabel: FIXED_HOURS + 'h',
+      totalGenerated: stats.total,
+      todayGenerated: stats.todayCount,
     }), { status: 200, headers: commonHeaders });
 
   } catch (err) {
