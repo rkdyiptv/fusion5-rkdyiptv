@@ -128,6 +128,17 @@ export async function onRequest(context) {
     font-size: 13px;
     color: #ff9fc4;
   }
+  .stats-row {
+    display: flex;
+    justify-content: center;
+    gap: 18px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    font-size: 12px;
+    color: #9a9ab0;
+  }
+  .stats-row b { color: #00e6c3; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -156,6 +167,11 @@ export async function onRequest(context) {
     </div>
 
     <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join Telegram</a>
+
+    <div class="stats-row" id="stats-row">
+      <div>Today: <b id="stat-today">—</b></div>
+      <div>Total: <b id="stat-total">—</b></div>
+    </div>
   </div>
 
 <script>
@@ -176,6 +192,17 @@ document.addEventListener('keydown', function (e) {
     (e.ctrlKey && ['u', 's'].includes(key));
   if (blockCombo) e.preventDefault();
 });
+
+async function loadStats() {
+  try {
+    const res = await fetch('/api/public/stats');
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('stat-today').textContent = data.today;
+      document.getElementById('stat-total').textContent = data.total;
+    }
+  } catch (_) { /* stats are informational only, fail silently */ }
+}
 
 function renderDots() {
   const dotsEl = document.getElementById('dots');
@@ -295,6 +322,14 @@ async function generatePlaylist() {
     // Copy button only becomes usable once the playlist actually exists
     const copyBtn = document.getElementById('copy-btn');
     copyBtn.disabled = false;
+
+    // Instant counter update — no need to wait for a fresh /stats fetch
+    if (typeof data.totalGenerated === 'number') {
+      document.getElementById('stat-total').textContent = data.totalGenerated;
+    }
+    if (typeof data.todayGenerated === 'number') {
+      document.getElementById('stat-today').textContent = data.todayGenerated;
+    }
   } catch (err) {
     msgEl.className = 'msg error';
     msgEl.textContent = '❌ ' + err.message;
@@ -314,6 +349,7 @@ function copyUrl() {
 }
 
 initSession();
+loadStats();
 </script>
 </body>
 </html>`;
