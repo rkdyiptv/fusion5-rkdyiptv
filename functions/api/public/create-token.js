@@ -3,11 +3,14 @@
 //  File: functions/api/public/create-token.js
 //  Route: POST /api/public/create-token
 //  Requires: 5 server-verified ads watched. Fixed 24h validity.
+//  Adds: 15-minute per-IP cooldown after each successful generation.
 // ============================================================
 
 const REQUIRED_ADS = 5;
 const FIXED_HOURS = 24;
 const MAX_TOKENS_PER_IP_PER_DAY = 5;
+const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+const COOLDOWN_TTL_SECONDS = 900;   // 15 minutes
 
 function generateTokenId() {
   const bytes = new Uint8Array(24);
@@ -40,27 +43,44 @@ export async function onRequest(context) {
       });
     }
 
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+
+    // ── Enforce 15-minute cooldown since last successful generation ──
+    const cooldownKey = `cooldown:${ip}`;
+    const cooldownRaw = await env.TOKENS.get(cooldownKey);
+    if (cooldownRaw) {
+      const cooldownExpiresAt = parseInt(cooldownRaw, 10);
+      const remainingMs = cooldownExpiresAt - Date.now();
+      if (remainingMs > 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          cooldown: true,
+          remainingMs,
+          error: 'Please wait before generating another playlist.',
+        }), { status: 429, headers: commonHeaders });
+      }
+    }
+
     // ── Verify ad session actually completed 5/5 (server-side, not trust-client) ──
     const rawSession = await env.TOKENS.get(`adsession:${sessionId}`);
     if (!rawSession) {
-      return new Response(JSON.stringify({ success: false, error: 'Session expire ho gaya. Page reload karke dubara 5 ads dekho.' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Session expired. Reload the page and watch the 5 ads again.' }), {
         status: 400, headers: commonHeaders,
       });
     }
     const sessionData = JSON.parse(rawSession);
     if ((sessionData.count || 0) < REQUIRED_ADS) {
-      return new Response(JSON.stringify({ success: false, error: `Sirf ${sessionData.count}/${REQUIRED_ADS} ads complete hue hain.` }), {
+      return new Response(JSON.stringify({ success: false, error: `Only ${sessionData.count}/${REQUIRED_ADS} ads completed.` }), {
         status: 400, headers: commonHeaders,
       });
     }
 
-    // ── Basic per-IP anti-abuse limit ──
-    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    // ── Basic per-IP daily anti-abuse limit ──
     const rlKey = `ratelimit:public-token:${ip}`;
     const rlRaw = await env.TOKENS.get(rlKey);
     const rlCount = rlRaw ? parseInt(rlRaw) : 0;
     if (rlCount >= MAX_TOKENS_PER_IP_PER_DAY) {
-      return new Response(JSON.stringify({ success: false, error: 'Aaj ka limit khatam ho gaya, kal try karo.' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Daily limit reached, please try again tomorrow.' }), {
         status: 429, headers: commonHeaders,
       });
     }
@@ -89,9 +109,12 @@ export async function onRequest(context) {
     const ttl = Math.ceil(durationMs / 1000);
     await env.TOKENS.put(`token:${tokenId}`, JSON.stringify(tokenData), { expirationTtl: ttl });
 
-    // consume the ad session (single-use) + bump rate limit counter
+    // consume the ad session (single-use) + bump daily rate limit counter
     await env.TOKENS.delete(`adsession:${sessionId}`);
     await env.TOKENS.put(rlKey, String(rlCount + 1), { expirationTtl: 86400 });
+
+    // start the 15-minute cooldown for this IP
+    await env.TOKENS.put(cooldownKey, String(now + COOLDOWN_MS), { expirationTtl: COOLDOWN_TTL_SECONDS });
 
     const url = new URL(request.url);
     const playlistUrl = `${url.origin}/api/rkdyiptv/playlist.m3u?token=${tokenId}`;
