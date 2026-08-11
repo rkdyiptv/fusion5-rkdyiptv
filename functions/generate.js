@@ -15,9 +15,17 @@ export async function onRequest(context) {
 <script src='//libtl.com/sdk.js' data-zone='11341413' data-sdk='show_11341413'></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    user-select: none;
+  }
   body {
-    background: linear-gradient(135deg, #0b0b12 0%, #1a0b2e 100%);
-    color: #eee;
+    background:
+      radial-gradient(circle at 15% 20%, rgba(0,230,195,0.12), transparent 40%),
+      radial-gradient(circle at 85% 80%, rgba(255,0,153,0.14), transparent 45%),
+      #05060a;
+    color: #e8e8f0;
     font-family: 'Segoe UI', Arial, sans-serif;
     min-height: 100vh;
     display: flex;
@@ -26,70 +34,109 @@ export async function onRequest(context) {
     padding: 20px;
   }
   .card {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 20px;
-    padding: 36px 26px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(0,230,195,0.25);
+    border-radius: 18px;
+    padding: 34px 26px;
     max-width: 420px;
     width: 100%;
     text-align: center;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    box-shadow: 0 0 0 1px rgba(255,0,153,0.05), 0 25px 60px rgba(0,0,0,0.6);
+    position: relative;
+    overflow: hidden;
   }
+  .card::before {
+    content: '';
+    position: absolute;
+    top: -60%; left: -20%;
+    width: 140%; height: 140%;
+    background: conic-gradient(from 0deg, transparent, rgba(0,230,195,0.08), transparent 30%);
+    animation: spin 10s linear infinite;
+    pointer-events: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .card > * { position: relative; z-index: 1; }
+  .logo-emoji { font-size: 34px; margin-bottom: 6px; }
   h1 {
-    font-size: 22px;
-    background: linear-gradient(90deg, #4ea1ff, #b16cff);
+    font-size: 21px;
+    letter-spacing: 0.5px;
+    background: linear-gradient(90deg, #00e6c3, #ff0099);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
     margin-bottom: 6px;
   }
-  .sub { color: #999; font-size: 13px; margin-bottom: 24px; }
-  .dots { display: flex; justify-content: center; gap: 10px; margin-bottom: 22px; }
+  .sub { color: #9a9ab0; font-size: 13px; margin-bottom: 22px; }
+  .dots { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
   .dot {
-    width: 14px; height: 14px; border-radius: 50%;
-    background: rgba(255,255,255,0.1);
+    width: 13px; height: 13px; border-radius: 50%;
+    background: rgba(255,255,255,0.08);
     border: 1px solid rgba(255,255,255,0.15);
     transition: all .25s;
   }
-  .dot.filled { background: linear-gradient(90deg, #4ea1ff, #b16cff); border-color: transparent; }
+  .dot.filled { background: linear-gradient(90deg, #00e6c3, #ff0099); border-color: transparent; box-shadow: 0 0 10px rgba(0,230,195,0.6); }
   .btn {
     width: 100%;
     padding: 14px;
-    background: linear-gradient(90deg, #229ED9, #4ea1ff);
-    color: #fff;
+    background: linear-gradient(90deg, #00b8d4, #00e6c3);
+    color: #04231f;
     border: none;
-    border-radius: 8px;
-    font-weight: bold;
+    border-radius: 10px;
+    font-weight: 700;
     cursor: pointer;
     font-size: 15px;
+    letter-spacing: 0.2px;
   }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn.generate { background: linear-gradient(90deg, #22c55e, #16a34a); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn.generate { background: linear-gradient(90deg, #ff0099, #ff5f8a); color: #2a0016; }
+  .btn.copy { background: linear-gradient(90deg, #7c4dff, #00e6c3); color: #12002b; }
+  .btn.telegram {
+    background: transparent;
+    color: #00e6c3;
+    border: 1px solid rgba(0,230,195,0.4);
+    margin-top: 16px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .btn.telegram:hover { background: rgba(0,230,195,0.08); }
   .msg { font-size: 13px; margin-top: 14px; min-height: 18px; }
-  .msg.error { color: #ff5555; }
-  .msg.info { color: #4ea1ff; }
+  .msg.error { color: #ff5c7a; }
+  .msg.info { color: #00e6c3; }
   #generate-section { display: none; }
   #result-section { display: none; margin-top: 10px; }
   .url-box {
-    background: rgba(0,0,0,0.4);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 8px;
+    background: rgba(0,0,0,0.45);
+    border: 1px solid rgba(0,230,195,0.2);
+    border-radius: 10px;
     padding: 12px;
     font-size: 12px;
     word-break: break-all;
-    color: #4ea1ff;
+    color: #00e6c3;
     margin-bottom: 12px;
     text-align: left;
   }
-  .expiry { font-size: 12px; color: #aaa; margin-bottom: 14px; }
-  .logo-emoji { font-size: 36px; margin-bottom: 8px; }
+  .expiry { font-size: 12px; color: #aeaec2; margin-bottom: 14px; }
+  .cooldown-box {
+    display: none;
+    background: rgba(255,0,153,0.06);
+    border: 1px solid rgba(255,0,153,0.25);
+    border-radius: 10px;
+    padding: 14px;
+    font-size: 13px;
+    color: #ff9fc4;
+  }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="logo-emoji">🎬</div>
     <h1>RKDYIPTV Playlist</h1>
-    <div class="sub">5 ads dekho, 24h ka playlist link paao</div>
+    <div class="sub">Watch 5 ads → unlock a 24h playlist link</div>
+
+    <div id="cooldown-section" class="cooldown-box"></div>
 
     <div id="ad-section">
       <div class="dots" id="dots"></div>
@@ -105,8 +152,10 @@ export async function onRequest(context) {
     <div id="result-section">
       <div class="url-box" id="result-url"></div>
       <div class="expiry" id="result-expiry"></div>
-      <button class="btn" onclick="copyUrl()">📋 Copy Link</button>
+      <button class="btn copy" id="copy-btn" onclick="copyUrl()" disabled>📋 Copy Link</button>
     </div>
+
+    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join @rkdyiptv on Telegram</a>
   </div>
 
 <script>
@@ -114,6 +163,19 @@ const REQUIRED_ADS = 5;
 let sessionId = null;
 let watchedCount = 0;
 let generatedUrl = '';
+
+// ---- Basic anti view-source / anti-save deterrents ----
+// Note: these only discourage casual copying; they cannot fully block
+// browser dev tools or view-source, since that is enforced client-side.
+document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+document.addEventListener('keydown', function (e) {
+  const key = (e.key || '').toLowerCase();
+  const blockCombo =
+    key === 'f12' ||
+    (e.ctrlKey && e.shiftKey && ['i', 'j', 'c'].includes(key)) ||
+    (e.ctrlKey && ['u', 's'].includes(key));
+  if (blockCombo) e.preventDefault();
+});
 
 function renderDots() {
   const dotsEl = document.getElementById('dots');
@@ -125,18 +187,43 @@ function renderDots() {
   }
 }
 
+function showCooldown(remainingMs) {
+  document.getElementById('ad-section').style.display = 'none';
+  document.getElementById('generate-section').style.display = 'none';
+  const box = document.getElementById('cooldown-section');
+  box.style.display = 'block';
+
+  function tick() {
+    const mins = Math.max(0, Math.ceil(remainingMs / 60000));
+    box.textContent = '⏳ You already generated a playlist recently. Please wait ~' + mins + ' more minute(s) before generating a new one.';
+    remainingMs -= 1000;
+    if (remainingMs <= 0) {
+      window.location.reload();
+      return;
+    }
+    setTimeout(tick, 1000);
+  }
+  tick();
+}
+
 async function initSession() {
   const btn = document.getElementById('watch-btn');
   try {
     const res = await fetch('/api/public/ad-progress');
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Session start fail');
+
+    if (!data.success && data.cooldown && typeof data.remainingMs === 'number') {
+      showCooldown(data.remainingMs);
+      return;
+    }
+    if (!data.success) throw new Error(data.error || 'Could not start session');
+
     sessionId = data.sessionId;
     renderDots();
     btn.disabled = false;
     btn.textContent = 'Watch Ad (0/' + REQUIRED_ADS + ')';
   } catch (err) {
-    showAdMsg('Session shuru nahi hua. Page reload karo.', true);
+    showAdMsg('Could not start session. Please reload the page.', true);
   }
 }
 
@@ -149,7 +236,7 @@ function showAdMsg(text, isError) {
 async function watchAd() {
   const btn = document.getElementById('watch-btn');
   btn.disabled = true;
-  btn.textContent = 'Ad load ho raha hai...';
+  btn.textContent = 'Loading ad...';
   showAdMsg('', false);
 
   try {
@@ -161,7 +248,7 @@ async function watchAd() {
       body: JSON.stringify({ sessionId }),
     });
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Progress update fail');
+    if (!data.success) throw new Error(data.error || 'Could not update progress');
 
     watchedCount = data.count;
     renderDots();
@@ -172,12 +259,12 @@ async function watchAd() {
     } else {
       btn.disabled = false;
       btn.textContent = 'Watch Ad (' + watchedCount + '/' + REQUIRED_ADS + ')';
-      showAdMsg('✅ Ad complete! Next ad dekho.', false);
+      showAdMsg('✅ Ad complete! Watch the next one.', false);
     }
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Watch Ad (' + watchedCount + '/' + REQUIRED_ADS + ') — Retry';
-    showAdMsg('❌ Ad complete nahi hui ya skip ho gayi. Dubara try karo.', true);
+    showAdMsg('❌ Ad was not completed or was skipped. Please try again.', true);
   }
 }
 
@@ -195,7 +282,7 @@ async function generatePlaylist() {
       body: JSON.stringify({ sessionId }),
     });
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Generate fail');
+    if (!data.success) throw new Error(data.error || 'Could not generate playlist');
 
     generatedUrl = data.playlistUrl;
     document.getElementById('result-url').textContent = generatedUrl;
@@ -204,6 +291,10 @@ async function generatePlaylist() {
 
     document.getElementById('generate-section').style.display = 'none';
     document.getElementById('result-section').style.display = 'block';
+
+    // Copy button only becomes usable once the playlist actually exists
+    const copyBtn = document.getElementById('copy-btn');
+    copyBtn.disabled = false;
   } catch (err) {
     msgEl.className = 'msg error';
     msgEl.textContent = '❌ ' + err.message;
@@ -213,8 +304,8 @@ async function generatePlaylist() {
 }
 
 function copyUrl() {
+  if (!generatedUrl) return;
   navigator.clipboard.writeText(generatedUrl).then(() => {
-    showAdMsg('', false);
     const el = document.getElementById('result-expiry');
     const original = el.textContent;
     el.textContent = '✅ Copied!';
@@ -229,6 +320,11 @@ initSession();
 
   return new Response(html, {
     status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    },
   });
 }
