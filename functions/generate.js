@@ -171,7 +171,7 @@ export async function onRequest(context) {
       <button class="btn copy" id="copy-btn" onclick="copyUrl()" disabled>📋 Copy Link</button>
     </div>
 
-    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join @rkdyiptv on Telegram</a>
+    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join Telegram</a>
 
     <div class="stats-row" id="stats-row">
       <div>Today: <b id="stat-today">—</b></div>
