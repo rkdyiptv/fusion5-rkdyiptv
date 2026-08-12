@@ -2,6 +2,7 @@
 //  RKDYIPTV FUSION5 — Live TV + VOD (Single Playlist)
 //  File: functions/api/rkdyiptv/playlist.m3u.js
 //  Movies use: /movie/RKDYIPTV/rkdy/{id}.mp4?token={random}&p={portalId}
+//  Cache Buster: v3
 // ============================================================
 
 import { resolvePortal } from '../../_lib/portals.js';
@@ -11,7 +12,7 @@ const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 const TOKEN_WINDOW    = 24 * 60 * 60 * 1000;
 const STALKER_TOKEN_DURATION = 60 * 60 * 1000;
 const CACHE_DURATION  = 10 * 60 * 1000;
-const VOD_CACHE_DURATION = 0;
+const VOD_CACHE_DURATION = 60 * 60 * 1000;
 const TELEGRAM_URL    = 'https://t.me/rkdyiptv';
 const DEFAULT_LOGO    = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
 const RATE_WINDOW     = 60 * 60 * 1000;
@@ -23,7 +24,7 @@ const VOD_MAX_CATEGORIES = 30;
 const VOD_PAGES_PER_CAT = 2;
 const VOD_BATCH_SIZE = 5;
 
-// ── Per-portal caches (keyed by portal id) ──
+// ── Per-portal caches (keyed by portalId + portalName to prevent stale data) ──
 const authTokenCache = new Map();
 const liveCache      = new Map();
 const vodCache       = new Map();
@@ -348,7 +349,7 @@ async function getAllVOD(portalConfig, token, catMap) {
   const allMovies = [];
   const categoryIds = Object.keys(catMap);
   const limitedCategoryIds = categoryIds.slice(0, VOD_MAX_CATEGORIES);
-  console.log(`[VOD] Fetching ${limitedCategoryIds.length} categories`);
+  console.log(`[VOD] Fetching ${limitedCategoryIds.length} categories from ${portalConfig.portalUrl}`);
   for (let i = 0; i < limitedCategoryIds.length; i += VOD_BATCH_SIZE) {
     const batch = limitedCategoryIds.slice(i, i + VOD_BATCH_SIZE);
     const results = await Promise.all(
@@ -482,14 +483,16 @@ export async function onRequest(context) {
     return errorM3U('⏰ Token Expired', 'Contact admin for a new token', commonHeaders);
   }
 
-  // ✅ Portal resolve — use token's portalId, fallback to default only if missing
   const resolved = await resolvePortal(env, tokenData.portalId);
   if (!resolved) {
     return errorM3U('⚠️ No Portal Configured', 'Ask admin to add a portal in Portal Manager (/portal)', commonHeaders);
   }
   const portalConfig = resolved.config;
 
-  console.log(`[PLAYLIST] Portal: ${resolved.name} (id=${resolved.id}) | token portalId: ${tokenData.portalId || 'none'} | token=${userToken.slice(0,8)}...`);
+  // ✅ Cache key includes both portal ID + URL — prevents stale data from deleted/renamed portals
+  const CACHE_KEY = `${resolved.id}__${portalConfig.portalUrl}__${portalConfig.mac}`;
+
+  console.log(`[PLAYLIST] Portal: ${resolved.name} (id=${resolved.id}) | url=${portalConfig.portalUrl} | token=${userToken.slice(0,8)}...`);
 
   const currentDevice = await computeDeviceFingerprint(request, SECRET_KEY);
 
@@ -528,7 +531,6 @@ export async function onRequest(context) {
 
   // ============================================================
   //  BUILD PLAYLIST — Live TV + Movies
-  //  ✅ FIX: Data cache per portal, M3U built fresh every request
   // ============================================================
   try {
     const cacheNow = Date.now();
@@ -536,9 +538,9 @@ export async function onRequest(context) {
     let token = await getStalkerToken(portalConfig, resolved.id);
     await setupProfile(portalConfig, token);
 
-    // ── LIVE TV data (cached per portal) ──
+    // ── LIVE TV data (cached per portal URL+MAC — prevents stale data) ──
     let liveCatMap, liveChannels;
-    const cachedLiveEntry = liveCache.get(resolved.id);
+    const cachedLiveEntry = liveCache.get(CACHE_KEY);
 
     if (cachedLiveEntry && (cacheNow - cachedLiveEntry.time) < CACHE_DURATION) {
       liveCatMap = cachedLiveEntry.catMap;
@@ -553,7 +555,7 @@ export async function onRequest(context) {
         if (!Array.isArray(liveChannels) || liveChannels.length === 0)
           throw new Error('Empty live list');
 
-        liveCache.set(resolved.id, {
+        liveCache.set(CACHE_KEY, {
           catMap: liveCatMap,
           channels: liveChannels,
           time: cacheNow,
@@ -568,7 +570,7 @@ export async function onRequest(context) {
           getCategories(portalConfig, token),
           getChannels(portalConfig, token)
         ]);
-        liveCache.set(resolved.id, {
+        liveCache.set(CACHE_KEY, {
           catMap: liveCatMap,
           channels: liveChannels,
           time: cacheNow,
@@ -576,9 +578,9 @@ export async function onRequest(context) {
       }
     }
 
-    // ── VOD data (cached per portal) ──
+    // ── VOD data (cached per portal URL+MAC — prevents stale data) ──
     let allMovies = [];
-    const cachedVODEntry = vodCache.get(resolved.id);
+    const cachedVODEntry = vodCache.get(CACHE_KEY);
 
     if (cachedVODEntry && (cacheNow - cachedVODEntry.time) < VOD_CACHE_DURATION) {
       allMovies = cachedVODEntry.movies;
@@ -589,7 +591,7 @@ export async function onRequest(context) {
         console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories | portal:${resolved.name}`);
         allMovies = await getAllVOD(portalConfig, token, vodCatMap);
         if (allMovies.length > 0) {
-          vodCache.set(resolved.id, { movies: allMovies, time: cacheNow });
+          vodCache.set(CACHE_KEY, { movies: allMovies, time: cacheNow });
         }
         console.log(`[VOD FRESH] ${allMovies.length} movies | portal:${resolved.name}`);
       } catch (err) {
@@ -663,8 +665,8 @@ export async function onRequest(context) {
     if (resolved) authTokenCache.delete(resolved.id);
 
     // ── Fallback — rebuild from cached data ──
-    const cachedLive = resolved ? liveCache.get(resolved.id) : null;
-    const cachedVOD = resolved ? vodCache.get(resolved.id) : null;
+    const cachedLive = liveCache.get(CACHE_KEY);
+    const cachedVOD = vodCache.get(CACHE_KEY);
 
     if (cachedLive?.channels?.length > 0) {
       console.log('[FALLBACK] Rebuilding m3u from cached data | portal:', resolved.name);
