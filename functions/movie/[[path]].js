@@ -77,6 +77,7 @@ export async function onRequest(context) {
   console.log(`[MOVIE REQ] path=${path} portalId=${portalId}`);
 
   // ── Extract movie ID from path ──
+  // Path: /movie/RKDYIPTV/rkdy/12345.mp4
   const match = path.match(/^\/movie\/RKDYIPTV\/rkdy\/(\d+)\.(mp4|mkv|avi|mpg|ts|m3u8)$/i);
 
   if (!match) {
@@ -98,7 +99,7 @@ export async function onRequest(context) {
     });
   }
 
-  // ── Resolve portal — uses portalId from URL (same as playlist!) ──
+  // ── Resolve portal using portalId from URL (same as playlist!) ──
   const resolved = await resolvePortal(env, portalId);
   if (!resolved) {
     return new Response('No portal configured. Add one at /portal', {
@@ -110,7 +111,7 @@ export async function onRequest(context) {
 
   console.log(`[MOVIE] Using portal: ${resolved.name} for movie ${movieId}`);
 
-  // ── Fetch stream URL from correct portal ──
+  // ── Fetch stream URL from correct Stalker portal ──
   try {
     let stalkerToken = await getStalkerToken(portalConfig, resolved.id);
     await setupProfile(portalConfig, stalkerToken);
@@ -126,6 +127,7 @@ export async function onRequest(context) {
 
     console.log(`[MOVIE OK] ID:${movieId} portal=${resolved.name}`);
 
+    // Redirect to real stream URL
     return new Response(null, {
       status: 302,
       headers: {
