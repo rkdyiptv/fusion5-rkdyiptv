@@ -20,9 +20,6 @@ export async function onRequest(context) {
     return Response.redirect(new URL('/admin', request.url).toString(), 302);
   }
 
-  // Admin session already verified above, so we read full portal details
-  // (mac/serial/device ids) directly from KV here — no extra password
-  // needed since this whole page is already behind the admin cookie.
   const portals = env.TOKENS ? await getPortals(env) : [];
   const portalsJson = JSON.stringify(portals).replace(/</g, '\\u003c');
 
@@ -167,6 +164,18 @@ export async function onRequest(context) {
   .unlocked { background: rgba(255,170,51,0.15); color: #ffaa33; }
   .locked { background: rgba(46,213,115,0.15); color: #2ed573; }
   .expired { background: rgba(255,85,85,0.15); color: #ff5555; }
+  /* ✅ Portal badge in token */
+  .portal-tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: bold;
+    background: rgba(177,108,255,0.15);
+    color: #b16cff;
+    margin-left: 6px;
+    border: 1px solid rgba(177,108,255,0.3);
+  }
   #new-token-result {
     display: none;
     margin-top: 15px;
@@ -223,6 +232,28 @@ export async function onRequest(context) {
     margin-top: 8px;
   }
   .portal-info b { color: #eee; }
+  /* ✅ No portal warning */
+  .no-portal-warn {
+    background: rgba(255,85,85,0.1);
+    border: 1px solid rgba(255,85,85,0.3);
+    border-radius: 8px;
+    padding: 12px;
+    color: #ff8888;
+    font-size: 13px;
+    margin-bottom: 15px;
+    display: none;
+  }
+  select {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 16px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    color: #eee;
+    font-size: 13px;
+  }
+  select:focus { outline: none; border-color: #4ea1ff; }
 </style>
 </head>
 <body>
@@ -236,33 +267,53 @@ export async function onRequest(context) {
     <div class="card">
       <h2>🎫 Generate New Token</h2>
 
-      <label for="portal-select" style="display:block; font-size:12px; color:#999; margin-bottom:6px;">Portal</label>
-      <select id="portal-select" style="width:100%; padding:10px; margin-bottom:16px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#eee; font-size:13px;">
+      <!-- ✅ No portal warning -->
+      <div class="no-portal-warn" id="no-portal-warn">
+        ⚠️ No portal selected! Please <a href="/portal" style="color:#ff8888;">add a portal</a> first.
+      </div>
+
+      <label for="portal-select" style="display:block; font-size:12px; color:#999; margin-bottom:6px;">
+        📡 Select Portal
+      </label>
+      <select id="portal-select" onchange="onPortalChange()">
         ${
           portals.length === 0
-            ? '<option value="">No portals added — using none</option>'
-            : portals.map(p => `<option value="${p.id}" ${p.isDefault ? 'selected' : ''}>${p.name}${p.isDefault ? ' (default)' : ''}</option>`).join('')
+            ? '<option value="">⚠️ No portals added yet</option>'
+            : portals.map(p =>
+                `<option value="${p.id}" ${p.isDefault ? 'selected' : ''}>
+                  ${p.name}${p.isDefault ? ' ⭐ (default)' : ''}
+                </option>`
+              ).join('')
         }
       </select>
 
+      <label style="display:block; font-size:12px; color:#999; margin-bottom:8px;">
+        ⏱️ Select Duration
+      </label>
       <div class="duration-grid">
         <div class="dur-btn" data-hours="1">1h</div>
         <div class="dur-btn" data-hours="2">2h</div>
         <div class="dur-btn" data-hours="3">3h</div>
         <div class="dur-btn" data-hours="6">6h</div>
         <div class="dur-btn" data-hours="12">12h</div>
-        <div class="dur-btn" data-hours="24">24h (1d)</div>
+        <div class="dur-btn" data-hours="24">1d</div>
         <div class="dur-btn" data-hours="48">2d</div>
         <div class="dur-btn" data-hours="72">3d</div>
         <div class="dur-btn" data-hours="168">7d</div>
         <div class="dur-btn" data-hours="360">15d</div>
         <div class="dur-btn" data-hours="720">30d</div>
       </div>
-      <button class="btn" id="gen-btn" onclick="generateToken()" disabled>Select Duration First</button>
+
+      <button class="btn" id="gen-btn" onclick="generateToken()" disabled>
+        Select Duration First
+      </button>
       <div id="status-msg"></div>
-      
+
       <div id="new-token-result">
         <div style="color:#2ed573;font-weight:bold;margin-bottom:8px;">✅ Token Created!</div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:4px;">
+          📡 Portal: <b id="new-portal-name" style="color:#b16cff;"></b>
+        </div>
         <div style="font-size:12px;color:#ccc;margin-bottom:6px;">Playlist URL:</div>
         <div class="token-value" id="new-url"></div>
         <button class="action-btn copy-btn" onclick="copyNewUrl()">📋 Copy URL</button>
@@ -277,7 +328,13 @@ export async function onRequest(context) {
           ? '<div class="empty">No portals added yet — click "Manage" to add one.</div>'
           : portals.map(p => `
             <div class="portal-item ${p.isDefault ? 'is-default' : ''}">
-              <div class="portal-name">${p.name}${p.isDefault ? '<span class="portal-badge">DEFAULT</span>' : ''}</div>
+              <div class="portal-name">
+                ${p.name}
+                ${p.isDefault ? '<span class="portal-badge">⭐ DEFAULT</span>' : ''}
+                <span style="font-size:10px;color:#555;margin-left:8px;font-family:monospace;">
+                  id: ${p.id}
+                </span>
+              </div>
               <div class="portal-info">
                 <div>🔗 <b>URL:</b> ${p.url}</div>
                 <div>📟 <b>MAC:</b> ${p.mac || '—'}</div>
@@ -302,17 +359,33 @@ export async function onRequest(context) {
 
 <script>
 let selectedHours = null;
-let currentPlaylistBase = window.location.origin + '/api/rkdyiptv/playlist.m3u';
 let newTokenUrl = '';
 const PORTALS = ${portalsJson};
+const currentPlaylistBase = window.location.origin + '/api/rkdyiptv/playlist.m3u';
+
+// ✅ Portal change handler — warn if empty
+function onPortalChange() {
+  const val = document.getElementById('portal-select').value;
+  const warn = document.getElementById('no-portal-warn');
+  warn.style.display = val ? 'none' : 'block';
+}
+
+// Run on load
+onPortalChange();
 
 // Duration button selection
 document.querySelectorAll('.dur-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    selectedHours = parseInt(btn.dataset.hours);
+    selectedHours = parseInt(btn.dataset.hours, 10);
     const genBtn = document.getElementById('gen-btn');
+    const portalVal = document.getElementById('portal-select').value;
+    if (!portalVal) {
+      genBtn.disabled = true;
+      genBtn.textContent = 'Select a Portal First';
+      return;
+    }
     genBtn.disabled = false;
     genBtn.textContent = 'Generate Token (' + btn.textContent + ')';
   });
@@ -320,25 +393,51 @@ document.querySelectorAll('.dur-btn').forEach(btn => {
 
 async function generateToken() {
   if (!selectedHours) return;
+
+  const portalId = document.getElementById('portal-select').value;
+
+  // ✅ Guard — portal must be selected
+  if (!portalId) {
+    document.getElementById('status-msg').textContent = '❌ Please select a portal first!';
+    return;
+  }
+
+  const selectedPortal = PORTALS.find(p => p.id === portalId);
+  const portalName = selectedPortal ? selectedPortal.name : 'Unknown';
+
   const btn = document.getElementById('gen-btn');
   const status = document.getElementById('status-msg');
   btn.disabled = true;
   btn.textContent = 'Generating...';
   status.textContent = '⏳ Please wait...';
-  
+
   try {
-    const portalId = document.getElementById('portal-select').value;
+    // ✅ portalId correctly sent to backend
     const res = await fetch('/api/admin/create-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hours: selectedHours, portalId }),
+      body: JSON.stringify({
+        hours: selectedHours,
+        portalId: portalId,
+      }),
     });
+
     const data = await res.json();
+
     if (data.success) {
+      // ✅ Verify backend returned same portal
+      if (data.portalId !== portalId) {
+        status.textContent = '⚠️ Warning: Portal mismatch! Expected ' + portalName + ' but got ' + data.portalName;
+        btn.disabled = false;
+        btn.textContent = 'Generate Token';
+        return;
+      }
+
       newTokenUrl = currentPlaylistBase + '?token=' + encodeURIComponent(data.token);
       document.getElementById('new-url').textContent = newTokenUrl;
+      document.getElementById('new-portal-name').textContent = data.portalName || portalName;
       document.getElementById('new-token-result').style.display = 'block';
-      status.textContent = '✅ Token created successfully';
+      status.textContent = '✅ Token created for portal: ' + (data.portalName || portalName);
       loadTokens();
     } else {
       status.textContent = '❌ ' + (data.error || 'Failed');
@@ -346,6 +445,7 @@ async function generateToken() {
   } catch (err) {
     status.textContent = '❌ ' + err.message;
   }
+
   btn.disabled = false;
   btn.textContent = 'Generate Token';
 }
@@ -366,7 +466,7 @@ async function loadTokens() {
     renderTokens(data.tokens);
     renderStats(data.tokens);
   } catch (err) {
-    document.getElementById('tokens-list').innerHTML = 
+    document.getElementById('tokens-list').innerHTML =
       '<div class="empty">❌ Error: ' + err.message + '</div>';
   }
 }
@@ -377,12 +477,16 @@ function renderStats(tokens) {
   const unlocked = total - locked;
   const now = Date.now();
   const expiringSoon = tokens.filter(t => (t.expiryAt - now) < 3600000).length;
-  
-  document.getElementById('stats').innerHTML = 
-    '<div class="stat-item"><div class="stat-num">' + total + '</div><div class="stat-label">Total Tokens</div></div>' +
-    '<div class="stat-item"><div class="stat-num">' + locked + '</div><div class="stat-label">🔒 Locked</div></div>' +
-    '<div class="stat-item"><div class="stat-num">' + unlocked + '</div><div class="stat-label">🔓 Unlocked</div></div>' +
-    '<div class="stat-item"><div class="stat-num">' + expiringSoon + '</div><div class="stat-label">⏰ Expiring Soon</div></div>';
+  document.getElementById('stats').innerHTML =
+    stat(total, 'Total Tokens') +
+    stat(locked, '🔒 Locked') +
+    stat(unlocked, '🔓 Unlocked') +
+    stat(expiringSoon, '⏰ Expiring Soon');
+}
+
+function stat(num, label) {
+  return '<div class="stat-item"><div class="stat-num">' + num +
+    '</div><div class="stat-label">' + label + '</div></div>';
 }
 
 function renderTokens(tokens) {
@@ -391,25 +495,31 @@ function renderTokens(tokens) {
     container.innerHTML = '<div class="empty">No active tokens</div>';
     return;
   }
-  
-  // Sort by createdAt desc
+
   tokens.sort((a, b) => b.createdAt - a.createdAt);
-  
   const now = Date.now();
+
   container.innerHTML = tokens.map(t => {
     const timeLeft = t.expiryAt - now;
     const isExpiring = timeLeft < 3600000;
     const isLocked = !!t.device;
-    const status = isLocked 
+
+    const statusBadge = isLocked
       ? '<span class="status-badge locked">🔒 Locked</span>'
       : '<span class="status-badge unlocked">🔓 Unlocked</span>';
+
+    // ✅ Portal badge in every token
+    const portalBadge = t.portalName
+      ? '<span class="portal-tag">📡 ' + t.portalName + '</span>'
+      : '<span class="portal-tag" style="color:#ff8888;border-color:rgba(255,85,85,0.3);">⚠️ No Portal</span>';
+
     const expiringClass = isExpiring ? 'expiring' : (isLocked ? 'locked' : '');
     const playlistUrl = currentPlaylistBase + '?token=' + encodeURIComponent(t.token);
-    
+
     return \`
       <div class="token-item \${expiringClass}">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <div>\${status} <b style="font-size:13px;">Duration: \${t.durationLabel}</b></div>
+          <div>\${statusBadge}\${portalBadge} <b style="font-size:13px;">Duration: \${t.durationLabel}</b></div>
           <div style="font-size:11px;color:#999;">Created: \${formatTime(t.createdAt)}</div>
         </div>
         <div class="token-value">\${playlistUrl}</div>
@@ -417,9 +527,10 @@ function renderTokens(tokens) {
           <div>⏰ <b>Expires:</b> \${formatTime(t.expiryAt)}</div>
           <div>⌛ <b>Time Left:</b> \${formatDuration(timeLeft)}</div>
           <div>📊 <b>Fetches:</b> \${t.fetchCount || 0}</div>
+          \${t.portalId ? '<div>🆔 <b>Portal ID:</b> ' + t.portalId.slice(0,8) + '...</div>' : ''}
           \${isLocked ? '<div>📱 <b>Device:</b> ' + (t.lockedUA || 'Unknown').substring(0, 40) + '...</div>' : ''}
           \${t.firstUseIP ? '<div>🌐 <b>IP:</b> ' + t.firstUseIP + '</div>' : ''}
-          \${t.lockedAt ? '<div>🔒 <b>Locked at:</b> ' + formatTime(t.lockedAt) + '</div>' : ''}
+          \${t.lockedAt ? '<div>🔒 <b>Locked:</b> ' + formatTime(t.lockedAt) + '</div>' : ''}
         </div>
         <div class="token-actions">
           <button class="action-btn copy-btn" onclick="copyUrl('\${playlistUrl}', this)">📋 Copy URL</button>
@@ -466,7 +577,7 @@ function formatTime(ms) {
   const d = new Date(ms);
   return d.toLocaleString('en-IN', {
     day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit'
+    hour: '2-digit', minute: '2-digit',
   });
 }
 
@@ -482,13 +593,16 @@ function formatDuration(ms) {
 
 // Initial load
 loadTokens();
-setInterval(loadTokens, 30000); // Refresh every 30 sec
+setInterval(loadTokens, 30000);
 </script>
 </body>
 </html>`;
 
   return new Response(html, {
     status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+    },
   });
 }
