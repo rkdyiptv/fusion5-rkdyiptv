@@ -149,6 +149,11 @@ export async function onRequest(context) {
 
     <div id="cooldown-section" class="cooldown-box"></div>
 
+    <div id="portal-section" style="display:none; margin-bottom:18px; text-align:left;">
+      <label for="portal-select" style="display:block; font-size:12px; color:#9a9ab0; margin-bottom:6px;">Select Portal</label>
+      <select id="portal-select" style="width:100%; padding:11px; background:rgba(0,0,0,0.4); border:1px solid rgba(0,230,195,0.25); border-radius:8px; color:#e8e8f0; font-size:13px;"></select>
+    </div>
+
     <div id="ad-section">
       <div class="dots" id="dots"></div>
       <button class="btn" id="watch-btn" onclick="watchAd()">Loading...</button>
@@ -166,7 +171,7 @@ export async function onRequest(context) {
       <button class="btn copy" id="copy-btn" onclick="copyUrl()" disabled>📋 Copy Link</button>
     </div>
 
-    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join Telegram</a>
+    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join @rkdyiptv on Telegram</a>
 
     <div class="stats-row" id="stats-row">
       <div>Today: <b id="stat-today">—</b></div>
@@ -179,6 +184,37 @@ const REQUIRED_ADS = 5;
 let sessionId = null;
 let watchedCount = 0;
 let generatedUrl = '';
+let selectedPortalId = null;
+
+async function loadPortals() {
+  try {
+    const res = await fetch('/api/portal/public-list');
+    const data = await res.json();
+    if (!data.success || !data.portals || data.portals.length === 0) return;
+
+    const section = document.getElementById('portal-section');
+    const select = document.getElementById('portal-select');
+    select.innerHTML = '';
+
+    data.portals.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    });
+
+    // The portal currently marked default in Portal Manager is pre-selected
+    const def = data.portals.find(p => p.isDefault) || data.portals[0];
+    select.value = def.id;
+    selectedPortalId = def.id;
+
+    select.addEventListener('change', () => { selectedPortalId = select.value; });
+    section.style.display = 'block';
+  } catch (_) {
+    // No portals configured yet, or endpoint unavailable — generation still
+    // works without one, so fail silently here.
+  }
+}
 
 // ---- Basic anti view-source / anti-save deterrents ----
 // Note: these only discourage casual copying; they cannot fully block
@@ -306,7 +342,7 @@ async function generatePlaylist() {
     const res = await fetch('/api/public/create-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
+      body: JSON.stringify({ sessionId, portalId: selectedPortalId }),
     });
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Could not generate playlist');
@@ -350,6 +386,7 @@ function copyUrl() {
 
 initSession();
 loadStats();
+loadPortals();
 </script>
 </body>
 </html>`;
