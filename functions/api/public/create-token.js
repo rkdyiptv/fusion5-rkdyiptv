@@ -6,6 +6,8 @@
 //  Adds: 15-minute per-IP cooldown after each successful generation.
 // ============================================================
 
+import { getPortals } from '../../_lib/portals.js';
+
 const REQUIRED_ADS = 5;
 const FIXED_HOURS = 24;
 const MAX_TOKENS_PER_IP_PER_DAY = 5;
@@ -74,6 +76,17 @@ export async function onRequest(context) {
       });
     }
 
+    // Resolve which portal this token is for: use the requested portalId if
+    // valid, otherwise fall back to whichever portal is marked default.
+    let resolvedPortal = null;
+    const portals = await getPortals(env);
+    if (portals.length > 0) {
+      resolvedPortal =
+        (body.portalId && portals.find(p => p.id === body.portalId)) ||
+        portals.find(p => p.isDefault) ||
+        portals[0];
+    }
+
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
 
     // ── Enforce 15-minute cooldown since last successful generation ──
@@ -135,6 +148,8 @@ export async function onRequest(context) {
       fetchCount: 0,
       lastUsed: null,
       source: 'public-ad-gate',
+      portalId: resolvedPortal ? resolvedPortal.id : null,
+      portalName: resolvedPortal ? resolvedPortal.name : null,
     };
 
     const ttl = Math.ceil(durationMs / 1000);
