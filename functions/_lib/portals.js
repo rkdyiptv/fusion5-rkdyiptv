@@ -110,3 +110,40 @@ export async function deletePortal(env, id) {
   await savePortals(env, portals);
   return true;
 }
+
+// ============================================================
+//  Shared portal-config resolution — used by playlist.m3u.js and
+//  movie.js so both resolve the "which portal does this token use"
+//  question the exact same way, from the exact same data.
+// ============================================================
+
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
+
+// Converts a stored portal object (name/url/mac/serial/deviceId1/deviceId2)
+// into the shape the Stalker-portal request functions expect
+// (portalUrl/mac/serialNo/deviceId/deviceId2/timezone).
+export function toPortalConfig(portal) {
+  return {
+    portalUrl: portal.url,
+    mac: portal.mac,
+    serialNo: portal.serial,
+    deviceId: portal.deviceId1,
+    deviceId2: portal.deviceId2,
+    timezone: DEFAULT_TIMEZONE,
+  };
+}
+
+// Picks the portal a token/stream should use: the one it was created
+// with, falling back to whichever portal is marked default, falling
+// back to the first portal that exists. Returns null if no portals
+// have been added in Portal Manager yet.
+export async function resolvePortal(env, portalId) {
+  const portals = await getPortals(env);
+  if (portals.length === 0) return null;
+  const match =
+    (portalId && portals.find(p => p.id === portalId)) ||
+    portals.find(p => p.isDefault) ||
+    portals[0];
+  if (!match) return null;
+  return { id: match.id, name: match.name, config: toPortalConfig(match) };
+}
