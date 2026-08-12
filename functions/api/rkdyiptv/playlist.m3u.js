@@ -646,8 +646,7 @@ export async function onRequest(context) {
       // validity/expiry AND to know which portal to use. A random,
       // never-stored token here is what was causing "Invalid or
       // expired token" (shows as a broken/404 stream to the player).
-      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${userToken}`;
-
+      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${randomToken}&p=${tokenData.portalId || ''}`;
       let displayName = name;
       if (movie.year && !name.includes(movie.year)) {
         displayName = `${name} (${movie.year})`;
