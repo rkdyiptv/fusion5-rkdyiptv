@@ -1,17 +1,19 @@
 // ============================================================
 //  RKDYIPTV FUSION5 — Live TV + VOD (Single Playlist)
 //  File: functions/api/rkdyiptv/playlist.m3u.js
-//  Movies use: /movie/RKDYIPTV/rkdy/{id}.mp4?token={random}
+//  Movies use: /movie/RKDYIPTV/rkdy/{id}.mp4?token={random}&portal={portalId}
+//
+//  Portal (portalUrl/mac/serial/deviceId1/deviceId2) is NO LONGER
+//  hardcoded here. Each token remembers which portal it was created
+//  for (tokenData.portalId, set by create-token.js). That portal's
+//  details are looked up live from Portal Manager storage
+//  (functions/_lib/portals.js), so changes made in /portal take
+//  effect immediately without editing this file.
 // ============================================================
 
-const PORTAL_CONFIG = {
-  portalUrl: 'http://tv.stream4k.cc:80/stalker_portal',
-  mac: '00:1A:79:00:00:43',
-  serialNo: 'F6F47B17CA5B7',
-  deviceId: '8DEAD6F4A3A3ED4004275EDD9D79C87533ABF379FCE1629AECCF2E6E9F3FE321',
-  deviceId2: '8DEAD6F4A3A3ED4004275EDD9D79C87533ABF379FCE1629AECCF2E6E9F3FE321',
-  timezone: 'Asia/Kolkata',
-};
+import { getPortals } from '../../_lib/portals.js';
+
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 
 const TOKEN_WINDOW    = 24 * 60 * 60 * 1000;
 const STALKER_TOKEN_DURATION = 60 * 60 * 1000;
@@ -28,13 +30,43 @@ const VOD_MAX_CATEGORIES = 30;
 const VOD_PAGES_PER_CAT = 2;
 const VOD_BATCH_SIZE = 5;
 
-let authToken     = null;
-let tokenTime     = null;
-let cachedPlaylist = null;
-let cacheTime     = null;
-let cachedVOD     = null;
-let vodCacheTime  = null;
-const store       = new Map();
+// ── Per-portal caches (keyed by portal id) ──
+// Since a single Worker instance can now serve requests for multiple
+// portals, every cache that used to be one shared value is now a Map
+// keyed by portal id so different portals never mix their data.
+const authTokenCache = new Map();  // portalId -> { token, time }
+const playlistCache  = new Map();  // portalId -> { m3u, time }
+const vodCache       = new Map();  // portalId -> { movies, time }
+const store          = new Map();  // rate limiting (unchanged)
+
+// ============================================================
+//  PORTAL RESOLUTION
+// ============================================================
+function toPortalConfig(portal) {
+  return {
+    portalUrl: portal.url,
+    mac: portal.mac,
+    serialNo: portal.serial,
+    deviceId: portal.deviceId1,
+    deviceId2: portal.deviceId2,
+    timezone: DEFAULT_TIMEZONE,
+  };
+}
+
+// Picks the portal a token/stream should use: the one it was created
+// with, falling back to whichever portal is marked default, falling
+// back to the first portal that exists. Returns null if no portals
+// have been added in Portal Manager yet.
+async function resolvePortal(env, portalId) {
+  const portals = await getPortals(env);
+  if (portals.length === 0) return null;
+  const match =
+    (portalId && portals.find(p => p.id === portalId)) ||
+    portals.find(p => p.isDefault) ||
+    portals[0];
+  if (!match) return null;
+  return { id: match.id, name: match.name, config: toPortalConfig(match) };
+}
 
 // ============================================================
 //  CRYPTO
@@ -193,12 +225,15 @@ function getTimeSlot(time) {
   return Math.floor((time || Date.now()) / TOKEN_WINDOW);
 }
 
-async function signChannelId(channelId, SECRET_KEY) {
+// Channel tokens now also carry which portal they belong to (p), so
+// the /stream redirect knows which portal's Stalker API to call
+// without needing the original playlist token.
+async function signChannelId(channelId, portalId, SECRET_KEY) {
   try {
     const slot = getTimeSlot();
     const exp = Date.now() + TOKEN_WINDOW;
-    const sig = (await hmacSha256(SECRET_KEY, channelId + '_' + slot)).slice(0, 20);
-    const payload = { i: String(channelId), e: exp, s: slot, h: sig };
+    const sig = (await hmacSha256(SECRET_KEY, channelId + '_' + portalId + '_' + slot)).slice(0, 20);
+    const payload = { i: String(channelId), p: portalId, e: exp, s: slot, h: sig };
     return btoa(JSON.stringify(payload))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   } catch { return null; }
@@ -210,12 +245,12 @@ async function verifyChannelToken(encoded, SECRET_KEY) {
     const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64 + '=='.slice(0, (4 - base64.length % 4) % 4);
     const payload = JSON.parse(atob(padded));
-    if (!payload.i || !payload.e || !payload.s || !payload.h) return { valid: false };
+    if (!payload.i || !payload.p || !payload.e || !payload.s || !payload.h) return { valid: false };
     if (Date.now() > payload.e) return { valid: false };
-    const cur = (await hmacSha256(SECRET_KEY, payload.i + '_' + getTimeSlot())).slice(0, 20);
-    const prev = (await hmacSha256(SECRET_KEY, payload.i + '_' + (getTimeSlot() - 1))).slice(0, 20);
+    const cur = (await hmacSha256(SECRET_KEY, payload.i + '_' + payload.p + '_' + getTimeSlot())).slice(0, 20);
+    const prev = (await hmacSha256(SECRET_KEY, payload.i + '_' + payload.p + '_' + (getTimeSlot() - 1))).slice(0, 20);
     if (payload.h !== cur && payload.h !== prev) return { valid: false };
-    return { valid: true, id: payload.i };
+    return { valid: true, id: payload.i, portalId: payload.p };
   } catch { return { valid: false }; }
 }
 
@@ -236,46 +271,49 @@ function generateRandomToken() {
 }
 
 // ============================================================
-//  STALKER PORTAL
+//  STALKER PORTAL — every function now takes portalConfig explicitly
+//  instead of reading a hardcoded module-level constant.
 // ============================================================
-function getStalkerHeaders(token = null) {
+function getStalkerHeaders(portalConfig, token = null) {
   const h = {
     'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 1812 Safari/533.3',
     'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9',
     'X-User-Agent': 'Model: MAG250; Link: WiFi',
-    'Cookie': `mac=${PORTAL_CONFIG.mac}; stb_lang=en; timezone=${PORTAL_CONFIG.timezone};`,
-    'Referer': `${PORTAL_CONFIG.portalUrl}/c/`,
+    'Cookie': `mac=${portalConfig.mac}; stb_lang=en; timezone=${portalConfig.timezone};`,
+    'Referer': `${portalConfig.portalUrl}/c/`,
   };
   if (token) h['Authorization'] = `Bearer ${token}`;
   return h;
 }
 
-async function getStalkerToken() {
+async function getStalkerToken(portalConfig, portalId) {
   const now = Date.now();
-  if (authToken && tokenTime && (now - tokenTime) < STALKER_TOKEN_DURATION) return authToken;
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=stb&action=handshake&prehash=0&token=&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders() });
+  const cached = authTokenCache.get(portalId);
+  if (cached && (now - cached.time) < STALKER_TOKEN_DURATION) return cached.token;
+
+  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=handshake&prehash=0&token=&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig) });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('Handshake failed'); }
   if (!data.js?.token) throw new Error('No token');
-  authToken = data.js.token;
-  tokenTime = now;
-  return authToken;
+
+  authTokenCache.set(portalId, { token: data.js.token, time: now });
+  return data.js.token;
 }
 
-async function setupProfile(token) {
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=stb&action=get_profile&hd=1&sn=${PORTAL_CONFIG.serialNo}&stb_type=MAG250&client_type=STB&image_version=218&video_out=hdmi&device_id=${PORTAL_CONFIG.deviceId}&device_id2=${PORTAL_CONFIG.deviceId2}&hw_version=1.7-BD-00&not_valid_token=0&timestamp=${Math.floor(Date.now()/1000)}&JsHttpRequest=1-xml`;
-  await fetch(url, { headers: getStalkerHeaders(token) });
+async function setupProfile(portalConfig, token) {
+  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=get_profile&hd=1&sn=${portalConfig.serialNo}&stb_type=MAG250&client_type=STB&image_version=218&video_out=hdmi&device_id=${portalConfig.deviceId}&device_id2=${portalConfig.deviceId2}&hw_version=1.7-BD-00&not_valid_token=0&timestamp=${Math.floor(Date.now()/1000)}&JsHttpRequest=1-xml`;
+  await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
 }
 
 // ============================================================
 //  LIVE TV FUNCTIONS
 // ============================================================
-async function getCategories(token) {
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=itv&action=get_genres&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
+async function getCategories(portalConfig, token) {
+  const url = `${portalConfig.portalUrl}/server/load.php?type=itv&action=get_genres&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { return {}; }
@@ -284,9 +322,9 @@ async function getCategories(token) {
   return map;
 }
 
-async function getChannels(token) {
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=itv&action=get_all_channels&force_ch_link_check=&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
+async function getChannels(portalConfig, token) {
+  const url = `${portalConfig.portalUrl}/server/load.php?type=itv&action=get_all_channels&force_ch_link_check=&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('Channels parse failed'); }
@@ -294,10 +332,10 @@ async function getChannels(token) {
   return data.js.data;
 }
 
-async function getRealStreamUrl(token, channelId) {
+async function getRealStreamUrl(portalConfig, token, channelId) {
   const cmd = `ffrt http://localhost/ch/${channelId}`;
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&series=&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
+  const url = `${portalConfig.portalUrl}/server/load.php?type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&series=&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('Stream parse failed'); }
@@ -308,9 +346,9 @@ async function getRealStreamUrl(token, channelId) {
 // ============================================================
 //  🎬 VOD (MOVIES) FUNCTIONS
 // ============================================================
-async function getVODCategories(token) {
-  const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(token) });
+async function getVODCategories(portalConfig, token) {
+  const url = `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { return {}; }
@@ -325,47 +363,47 @@ async function getVODCategories(token) {
   return map;
 }
 
-async function getVODByCategory(token, categoryId, maxPages = VOD_PAGES_PER_CAT) {
+async function getVODByCategory(portalConfig, token, categoryId, maxPages = VOD_PAGES_PER_CAT) {
   const allMovies = [];
-  
+
   for (let page = 1; page <= maxPages; page++) {
     try {
-      const url = `${PORTAL_CONFIG.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
-      const res = await fetch(url, { headers: getStalkerHeaders(token) });
+      const url = `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=${page}&JsHttpRequest=1-xml`;
+      const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch { break; }
-      
+
       if (!data.js?.data || !Array.isArray(data.js.data) || data.js.data.length === 0) break;
-      
+
       allMovies.push(...data.js.data);
-      
+
       const totalItems = parseInt(data.js.total_items || 0);
       const maxPageItems = parseInt(data.js.max_page_items || 14);
       const totalPages = Math.ceil(totalItems / maxPageItems);
-      
+
       if (page >= totalPages) break;
     } catch (err) {
       console.error(`[VOD] Cat ${categoryId} page ${page} failed:`, err.message);
       break;
     }
   }
-  
+
   return allMovies;
 }
 
-async function getAllVOD(token, catMap) {
+async function getAllVOD(portalConfig, token, catMap) {
   const allMovies = [];
   const categoryIds = Object.keys(catMap);
   const limitedCategoryIds = categoryIds.slice(0, VOD_MAX_CATEGORIES);
-  
+
   console.log(`[VOD] Fetching ${limitedCategoryIds.length} categories`);
-  
+
   for (let i = 0; i < limitedCategoryIds.length; i += VOD_BATCH_SIZE) {
     const batch = limitedCategoryIds.slice(i, i + VOD_BATCH_SIZE);
     const results = await Promise.all(
-      batch.map(catId => 
-        getVODByCategory(token, catId).catch(err => {
+      batch.map(catId =>
+        getVODByCategory(portalConfig, token, catId).catch(err => {
           console.error(`[VOD] Cat ${catId} failed:`, err.message);
           return [];
         })
@@ -379,7 +417,7 @@ async function getAllVOD(token, catMap) {
       allMovies.push(...movies);
     });
   }
-  
+
   console.log(`[VOD] Total movies fetched: ${allMovies.length}`);
   return allMovies;
 }
@@ -437,27 +475,31 @@ export async function onRequest(context) {
 
     const channelId = verify.id;
 
+    if (!env.TOKENS) return accessDeniedResponse(commonHeaders);
+    const resolved = await resolvePortal(env, verify.portalId);
+    if (!resolved) return accessDeniedResponse(commonHeaders);
+    const portalConfig = resolved.config;
+
     try {
-      let token = await getStalkerToken();
-      await setupProfile(token);
-      let realUrl = await getRealStreamUrl(token, channelId);
+      let token = await getStalkerToken(portalConfig, resolved.id);
+      await setupProfile(portalConfig, token);
+      let realUrl = await getRealStreamUrl(portalConfig, token, channelId);
 
       if (realUrl.includes('localhost') || !realUrl.startsWith('http')) {
-        authToken = null;
-        token = await getStalkerToken();
-        await setupProfile(token);
-        realUrl = await getRealStreamUrl(token, channelId);
+        authTokenCache.delete(resolved.id);
+        token = await getStalkerToken(portalConfig, resolved.id);
+        await setupProfile(portalConfig, token);
+        realUrl = await getRealStreamUrl(portalConfig, token, channelId);
       }
 
-      console.log(`[STREAM OK] ID:${channelId}`);
+      console.log(`[STREAM OK] ID:${channelId} portal:${resolved.name}`);
       return new Response(null, {
         status: 302,
         headers: { ...commonHeaders, 'Cache-Control': 'no-cache', 'Location': realUrl },
       });
     } catch (err) {
       console.error('[STREAM ERROR]', err.message);
-      authToken = null;
-      tokenTime = null;
+      authTokenCache.delete(resolved.id);
       return new Response(JSON.stringify({ error: err.message }), {
         status: 500, headers: { ...commonHeaders, 'Content-Type': 'application/json' },
       });
@@ -490,6 +532,13 @@ export async function onRequest(context) {
   if (now > tokenData.expiryAt) {
     return errorM3U('⏰ Token Expired', 'Contact admin for a new token', commonHeaders);
   }
+
+  // Resolve which portal this specific token was generated for.
+  const resolved = await resolvePortal(env, tokenData.portalId);
+  if (!resolved) {
+    return errorM3U('⚠️ No Portal Configured', 'Ask admin to add a portal in Portal Manager (/portal)', commonHeaders);
+  }
+  const portalConfig = resolved.config;
 
   const currentDevice = await computeDeviceFingerprint(request, SECRET_KEY);
 
@@ -531,10 +580,11 @@ export async function onRequest(context) {
   // ============================================================
   try {
     const cacheNow = Date.now();
+    const cachedEntry = playlistCache.get(resolved.id);
 
-    if (cachedPlaylist && cacheTime && (cacheNow - cacheTime) < CACHE_DURATION && cachedPlaylist.includes('#EXTINF')) {
-      console.log('[PLAYLIST CACHE] Serving');
-      return new Response(cachedPlaylist, {
+    if (cachedEntry && (cacheNow - cachedEntry.time) < CACHE_DURATION && cachedEntry.m3u.includes('#EXTINF')) {
+      console.log('[PLAYLIST CACHE] Serving for portal:', resolved.name);
+      return new Response(cachedEntry.m3u, {
         status: 200,
         headers: {
           ...commonHeaders,
@@ -544,45 +594,44 @@ export async function onRequest(context) {
       });
     }
 
-    let token = await getStalkerToken();
-    await setupProfile(token);
+    let token = await getStalkerToken(portalConfig, resolved.id);
+    await setupProfile(portalConfig, token);
 
     // ── Fetch LIVE TV ──
     let liveCatMap, liveChannels;
     try {
       [liveCatMap, liveChannels] = await Promise.all([
-        getCategories(token),
-        getChannels(token)
+        getCategories(portalConfig, token),
+        getChannels(portalConfig, token)
       ]);
       if (!Array.isArray(liveChannels) || liveChannels.length === 0) throw new Error('Empty live list');
     } catch (innerErr) {
-      authToken = null;
-      tokenTime = null;
-      token = await getStalkerToken();
-      await setupProfile(token);
+      authTokenCache.delete(resolved.id);
+      token = await getStalkerToken(portalConfig, resolved.id);
+      await setupProfile(portalConfig, token);
       [liveCatMap, liveChannels] = await Promise.all([
-        getCategories(token),
-        getChannels(token)
+        getCategories(portalConfig, token),
+        getChannels(portalConfig, token)
       ]);
     }
 
     // ── Fetch VOD (Movies) with cache ──
     let allMovies = [];
-    if (cachedVOD && vodCacheTime && (cacheNow - vodCacheTime) < VOD_CACHE_DURATION) {
-      allMovies = cachedVOD;
-      console.log(`[VOD CACHE] Using ${allMovies.length} cached movies`);
+    const cachedVODEntry = vodCache.get(resolved.id);
+    if (cachedVODEntry && (cacheNow - cachedVODEntry.time) < VOD_CACHE_DURATION) {
+      allMovies = cachedVODEntry.movies;
+      console.log(`[VOD CACHE] Using ${allMovies.length} cached movies for portal:`, resolved.name);
     } else {
       try {
-        const vodCatMap = await getVODCategories(token);
+        const vodCatMap = await getVODCategories(portalConfig, token);
         console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories`);
-        allMovies = await getAllVOD(token, vodCatMap);
+        allMovies = await getAllVOD(portalConfig, token, vodCatMap);
         if (allMovies.length > 0) {
-          cachedVOD = allMovies;
-          vodCacheTime = cacheNow;
+          vodCache.set(resolved.id, { movies: allMovies, time: cacheNow });
         }
       } catch (err) {
         console.error('[VOD ERROR]', err.message);
-        allMovies = cachedVOD || [];
+        allMovies = cachedVODEntry?.movies || [];
       }
     }
 
@@ -604,7 +653,7 @@ export async function onRequest(context) {
       const channelId = extractChannelId(cmd);
       if (!channelId) continue;
 
-      const signedToken = await signChannelId(channelId, SECRET_KEY);
+      const signedToken = await signChannelId(channelId, resolved.id, SECRET_KEY);
       if (!signedToken) continue;
 
       const streamUrl = `${myBase}?action=stream&d=${signedToken}`;
@@ -613,7 +662,7 @@ export async function onRequest(context) {
       liveCount++;
     }
 
-    // ─── 🎬 MOVIES (VOD) — /movie/RKDYIPTV/rkdy/{id}.mp4?token=xxx ───
+    // ─── 🎬 MOVIES (VOD) — /movie/RKDYIPTV/rkdy/{id}.mp4?token=xxx&portal=yyy ───
     for (const movie of allMovies) {
       const name = (movie.name || 'Unknown Movie').trim();
       const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_LOGO;
@@ -625,25 +674,29 @@ export async function onRequest(context) {
 
       // Generate random token for this movie URL
       const randomToken = generateRandomToken();
-      
-      // Xtream Codes style URL — player will detect as VOD
-      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${randomToken}`;
-      
+
+      // Xtream Codes style URL — player will detect as VOD.
+      // "portal" tells /movie which portal's Stalker API to call —
+      // functions/movie.js must read this param (or its equivalent)
+      // and use the same Portal Manager lookup, otherwise it will keep
+      // resolving against whatever portal it's hardcoded to, which is
+      // the cause of the 404s on non-default portals.
+      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${randomToken}&portal=${resolved.id}`;
+
       let displayName = name;
       if (movie.year && !name.includes(movie.year)) {
         displayName = `${name} (${movie.year})`;
       }
-      
+
       m3u += `#EXTINF:-1 tvg-id="movie_${movieId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
       m3u += `${movieUrl}\n`;
       movieCount++;
     }
 
-    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}...`);
+    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}... portal=${resolved.name}`);
 
     if (liveCount > 0 || movieCount > 0) {
-      cachedPlaylist = m3u;
-      cacheTime = cacheNow;
+      playlistCache.set(resolved.id, { m3u, time: cacheNow });
     }
 
     return new Response(m3u, {
@@ -659,10 +712,10 @@ export async function onRequest(context) {
 
   } catch (err) {
     console.error('[PLAYLIST ERROR]', err.message);
-    authToken = null;
-    tokenTime = null;
-    if (cachedPlaylist?.includes('#EXTINF')) {
-      return new Response(cachedPlaylist, {
+    authTokenCache.delete(resolved.id);
+    const cachedEntry = playlistCache.get(resolved.id);
+    if (cachedEntry?.m3u?.includes('#EXTINF')) {
+      return new Response(cachedEntry.m3u, {
         status: 200,
         headers: { ...commonHeaders, 'Content-Type': 'application/x-mpegurl; charset=utf-8' },
       });
