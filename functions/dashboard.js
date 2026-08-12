@@ -4,6 +4,8 @@
 //  Route: /dashboard
 // ============================================================
 
+import { getPortals } from './_lib/portals.js';
+
 function checkAdminSession(request, env) {
   const cookie = request.headers.get('cookie') || '';
   const match = cookie.match(/rkdy_admin=([^;]+)/);
@@ -17,6 +19,12 @@ export async function onRequest(context) {
   if (!checkAdminSession(request, env)) {
     return Response.redirect(new URL('/admin', request.url).toString(), 302);
   }
+
+  // Admin session already verified above, so we read full portal details
+  // (mac/serial/device ids) directly from KV here — no extra password
+  // needed since this whole page is already behind the admin cookie.
+  const portals = env.TOKENS ? await getPortals(env) : [];
+  const portalsJson = JSON.stringify(portals).replace(/</g, '\\u003c');
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -70,6 +78,15 @@ export async function onRequest(context) {
     font-size: 16px;
     color: #4ea1ff;
     margin-bottom: 15px;
+  }
+  .card h2 a {
+    float: right;
+    font-size: 12px;
+    color: #b16cff;
+    text-decoration: none;
+    border: 1px solid rgba(177,108,255,0.35);
+    padding: 4px 10px;
+    border-radius: 14px;
   }
   .duration-grid {
     display: grid;
@@ -179,6 +196,33 @@ export async function onRequest(context) {
   }
   .stat-num { font-size: 22px; font-weight: bold; color: #4ea1ff; }
   .stat-label { font-size: 11px; color: #999; margin-top: 4px; }
+  .portal-item {
+    background: rgba(0,0,0,0.3);
+    padding: 12px 15px;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    border-left: 3px solid #b16cff;
+  }
+  .portal-item.is-default { border-left-color: #ffaa33; }
+  .portal-name { font-weight: bold; font-size: 13px; }
+  .portal-badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(255,170,51,0.15);
+    color: #ffaa33;
+    margin-left: 8px;
+  }
+  .portal-info {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 6px;
+    font-size: 12px;
+    color: #aaa;
+    margin-top: 8px;
+  }
+  .portal-info b { color: #eee; }
 </style>
 </head>
 <body>
@@ -215,6 +259,27 @@ export async function onRequest(context) {
       </div>
     </div>
 
+    <!-- Portals Section -->
+    <div class="card">
+      <h2>📡 Portals <a href="/portal">Manage →</a></h2>
+      <div id="portals-list">${
+        portals.length === 0
+          ? '<div class="empty">No portals added yet — click "Manage" to add one.</div>'
+          : portals.map(p => `
+            <div class="portal-item ${p.isDefault ? 'is-default' : ''}">
+              <div class="portal-name">${p.name}${p.isDefault ? '<span class="portal-badge">DEFAULT</span>' : ''}</div>
+              <div class="portal-info">
+                <div>🔗 <b>URL:</b> ${p.url}</div>
+                <div>📟 <b>MAC:</b> ${p.mac || '—'}</div>
+                <div>🔢 <b>Serial:</b> ${p.serial || '—'}</div>
+                <div>🆔 <b>Device 1:</b> ${p.deviceId1 || '—'}</div>
+                <div>🆔 <b>Device 2:</b> ${p.deviceId2 || '—'}</div>
+              </div>
+            </div>
+          `).join('')
+      }</div>
+    </div>
+
     <!-- Active Tokens Section -->
     <div class="card">
       <h2>📋 Active Tokens</h2>
@@ -229,6 +294,7 @@ export async function onRequest(context) {
 let selectedHours = null;
 let currentPlaylistBase = window.location.origin + '/api/rkdyiptv/playlist.m3u';
 let newTokenUrl = '';
+const PORTALS = ${portalsJson};
 
 // Duration button selection
 document.querySelectorAll('.dur-btn').forEach(btn => {
