@@ -425,12 +425,8 @@ export async function onRequest(context) {
     const channelId = verify.id;
 
     if (!env.TOKENS) return accessDeniedResponse(commonHeaders);
-
-    // ✅ Strict portal check — no fallback
     const resolved = await resolvePortal(env, verify.portalId);
-    if (!resolved || resolved.id !== verify.portalId) {
-      return accessDeniedResponse(commonHeaders);
-    }
+    if (!resolved) return accessDeniedResponse(commonHeaders);
     const portalConfig = resolved.config;
 
     try {
@@ -486,19 +482,14 @@ export async function onRequest(context) {
     return errorM3U('⏰ Token Expired', 'Contact admin for a new token', commonHeaders);
   }
 
-  // ✅ Strict portal check — token must have portalId
-  if (!tokenData.portalId) {
-    return errorM3U('⚠️ Invalid Token', 'Token has no portal assigned - generate a new one', commonHeaders);
-  }
-
-  // ✅ Strict portal resolve — no fallback to wrong portal
+  // ✅ Portal resolve — use token's portalId, fallback to default only if missing
   const resolved = await resolvePortal(env, tokenData.portalId);
-  if (!resolved || resolved.id !== tokenData.portalId) {
-    return errorM3U('⚠️ Portal Not Found', 'Assigned portal was removed - generate a new token', commonHeaders);
+  if (!resolved) {
+    return errorM3U('⚠️ No Portal Configured', 'Ask admin to add a portal in Portal Manager (/portal)', commonHeaders);
   }
   const portalConfig = resolved.config;
 
-  console.log(`[PLAYLIST] Using portal: ${resolved.name} (id=${resolved.id}) for token=${userToken.slice(0,8)}...`);
+  console.log(`[PLAYLIST] Portal: ${resolved.name} (id=${resolved.id}) | token portalId: ${tokenData.portalId || 'none'} | token=${userToken.slice(0,8)}...`);
 
   const currentDevice = await computeDeviceFingerprint(request, SECRET_KEY);
 
@@ -537,6 +528,7 @@ export async function onRequest(context) {
 
   // ============================================================
   //  BUILD PLAYLIST — Live TV + Movies
+  //  ✅ FIX: Data cache per portal, M3U built fresh every request
   // ============================================================
   try {
     const cacheNow = Date.now();
@@ -544,14 +536,14 @@ export async function onRequest(context) {
     let token = await getStalkerToken(portalConfig, resolved.id);
     await setupProfile(portalConfig, token);
 
-    // ── LIVE TV — Data cache (not M3U cache) ──
+    // ── LIVE TV data (cached per portal) ──
     let liveCatMap, liveChannels;
     const cachedLiveEntry = liveCache.get(resolved.id);
 
     if (cachedLiveEntry && (cacheNow - cachedLiveEntry.time) < CACHE_DURATION) {
       liveCatMap = cachedLiveEntry.catMap;
       liveChannels = cachedLiveEntry.channels;
-      console.log(`[LIVE CACHE] ${liveChannels.length} channels | portal:${resolved.name}`);
+      console.log(`[LIVE CACHE HIT] ${liveChannels.length} channels | portal:${resolved.name}`);
     } else {
       try {
         [liveCatMap, liveChannels] = await Promise.all([
@@ -566,7 +558,9 @@ export async function onRequest(context) {
           channels: liveChannels,
           time: cacheNow,
         });
+        console.log(`[LIVE FRESH] ${liveChannels.length} channels | portal:${resolved.name}`);
       } catch (innerErr) {
+        console.log(`[LIVE RETRY] ${innerErr.message}`);
         authTokenCache.delete(resolved.id);
         token = await getStalkerToken(portalConfig, resolved.id);
         await setupProfile(portalConfig, token);
@@ -582,34 +576,33 @@ export async function onRequest(context) {
       }
     }
 
-    // ── VOD — Data cache ──
+    // ── VOD data (cached per portal) ──
     let allMovies = [];
     const cachedVODEntry = vodCache.get(resolved.id);
 
     if (cachedVODEntry && (cacheNow - cachedVODEntry.time) < VOD_CACHE_DURATION) {
       allMovies = cachedVODEntry.movies;
-      console.log(`[VOD CACHE] ${allMovies.length} movies | portal:${resolved.name}`);
+      console.log(`[VOD CACHE HIT] ${allMovies.length} movies | portal:${resolved.name}`);
     } else {
       try {
         const vodCatMap = await getVODCategories(portalConfig, token);
-        console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories`);
+        console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories | portal:${resolved.name}`);
         allMovies = await getAllVOD(portalConfig, token, vodCatMap);
         if (allMovies.length > 0) {
           vodCache.set(resolved.id, { movies: allMovies, time: cacheNow });
         }
+        console.log(`[VOD FRESH] ${allMovies.length} movies | portal:${resolved.name}`);
       } catch (err) {
         console.error('[VOD ERROR]', err.message);
         allMovies = cachedVODEntry?.movies || [];
       }
     }
 
-    // ============================================================
-    //  M3U BUILD — Fresh every request (signed tokens + random movie tokens)
-    // ============================================================
+    // ── BUILD M3U (fresh every request) ──
     let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
     let liveCount = 0, movieCount = 0;
 
-    // ─── 📺 LIVE TV ───
+    // 📺 LIVE TV
     for (const ch of liveChannels) {
       const name = (ch.name || 'Unknown').trim();
       const logo = (ch.logo && ch.logo.trim() !== '') ? ch.logo : DEFAULT_LOGO;
@@ -630,7 +623,7 @@ export async function onRequest(context) {
       liveCount++;
     }
 
-    // ─── 🎬 MOVIES ───
+    // 🎬 MOVIES
     for (const movie of allMovies) {
       const name = (movie.name || 'Unknown Movie').trim();
       const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_LOGO;
@@ -652,7 +645,7 @@ export async function onRequest(context) {
       movieCount++;
     }
 
-    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}... portal=${resolved.name} (${resolved.id})`);
+    console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | portal=${resolved.name}(${resolved.id}) | token=${userToken.slice(0,8)}...`);
 
     return new Response(m3u, {
       status: 200,
@@ -670,11 +663,11 @@ export async function onRequest(context) {
     if (resolved) authTokenCache.delete(resolved.id);
 
     // ── Fallback — rebuild from cached data ──
-    const cachedLive = liveCache.get(resolved?.id);
-    const cachedVOD = vodCache.get(resolved?.id);
+    const cachedLive = resolved ? liveCache.get(resolved.id) : null;
+    const cachedVOD = resolved ? vodCache.get(resolved.id) : null;
 
     if (cachedLive?.channels?.length > 0) {
-      console.log('[FALLBACK] Building m3u from cached data for portal:', resolved.name);
+      console.log('[FALLBACK] Rebuilding m3u from cached data | portal:', resolved.name);
       let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
 
       for (const ch of cachedLive.channels) {
