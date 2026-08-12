@@ -235,6 +235,16 @@ export async function onRequest(context) {
     <!-- Generate Token Section -->
     <div class="card">
       <h2>🎫 Generate New Token</h2>
+
+      <label for="portal-select" style="display:block; font-size:12px; color:#999; margin-bottom:6px;">Portal</label>
+      <select id="portal-select" style="width:100%; padding:10px; margin-bottom:16px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#eee; font-size:13px;">
+        ${
+          portals.length === 0
+            ? '<option value="">No portals added — using none</option>'
+            : portals.map(p => `<option value="${p.id}" ${p.isDefault ? 'selected' : ''}>${p.name}${p.isDefault ? ' (default)' : ''}</option>`).join('')
+        }
+      </select>
+
       <div class="duration-grid">
         <div class="dur-btn" data-hours="1">1h</div>
         <div class="dur-btn" data-hours="2">2h</div>
@@ -317,10 +327,11 @@ async function generateToken() {
   status.textContent = '⏳ Please wait...';
   
   try {
+    const portalId = document.getElementById('portal-select').value;
     const res = await fetch('/api/admin/create-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hours: selectedHours }),
+      body: JSON.stringify({ hours: selectedHours, portalId }),
     });
     const data = await res.json();
     if (data.success) {
