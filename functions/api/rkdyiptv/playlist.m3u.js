@@ -595,8 +595,8 @@ export async function onRequest(context) {
         }
         console.log(`[VOD FRESH] ${allMovies.length} movies | portal:${resolved.name}`);
       } catch (err) {
-        console.error('[VOD ERROR]', err.message);
-        allMovies = cachedVODEntry?.movies || [];
+  console.error('[VOD ERROR]', err.message);
+  allMovies = [];
       }
     }
 
