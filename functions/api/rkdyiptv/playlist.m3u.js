@@ -25,8 +25,8 @@ const VOD_BATCH_SIZE = 5;
 
 // ── Per-portal caches (keyed by portal id) ──
 const authTokenCache = new Map();
-const playlistCache  = new Map();
-const vodCache       = new Map();
+const liveCache      = new Map(); // ✅ Sirf live data cache (catMap + channels)
+const vodCache       = new Map(); // ✅ Sirf VOD data cache (movies array)
 const store          = new Map();
 
 // ============================================================
@@ -179,6 +179,7 @@ function getClientIP(request) {
     request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
     request.headers.get('x-real-ip') || 'unknown';
 }
+
 // ============================================================
 //  STREAM SIGNING (for Live TV)
 // ============================================================
@@ -186,7 +187,6 @@ function getTimeSlot(time) {
   return Math.floor((time || Date.now()) / TOKEN_WINDOW);
 }
 
-// Channel tokens carry portal ID (p), so /stream knows which portal to use
 async function signChannelId(channelId, portalId, SECRET_KEY) {
   try {
     const slot = getTimeSlot();
@@ -230,7 +230,7 @@ function generateRandomToken() {
 }
 
 // ============================================================
-//  STALKER PORTAL — every function takes portalConfig explicitly
+//  STALKER PORTAL
 // ============================================================
 function getStalkerHeaders(portalConfig, token = null) {
   const h = {
@@ -302,7 +302,7 @@ async function getRealStreamUrl(portalConfig, token, channelId) {
 }
 
 // ============================================================
-//  🎬 VOD (MOVIES) FUNCTIONS
+//  VOD (MOVIES) FUNCTIONS
 // ============================================================
 async function getVODCategories(portalConfig, token) {
   const url = `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
@@ -379,6 +379,7 @@ async function getAllVOD(portalConfig, token, catMap) {
   console.log(`[VOD] Total movies fetched: ${allMovies.length}`);
   return allMovies;
 }
+
 // ============================================================
 //  ENTRY POINT
 // ============================================================
@@ -421,7 +422,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  STREAM ACTION — Live TV Only (movies use /movie/ URL)
+  //  STREAM ACTION — Live TV Only
   // ============================================================
   if (action === 'stream') {
     if (!checkRateLimit(ip, 'stream').allowed) return accessDeniedResponse(commonHeaders);
@@ -464,7 +465,7 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  PLAYLIST — Requires valid token + device lock
+  //  PLAYLIST — Token + Device Lock Check
   // ============================================================
   if (!env.TOKENS) {
     return errorM3U('⚠️ Server Misconfigured', 'KV binding missing', commonHeaders);
@@ -490,7 +491,6 @@ export async function onRequest(context) {
     return errorM3U('⏰ Token Expired', 'Contact admin for a new token', commonHeaders);
   }
 
-  // Resolve which portal this specific token was generated for
   const resolved = await resolvePortal(env, tokenData.portalId);
   if (!resolved) {
     return errorM3U('⚠️ No Portal Configured', 'Ask admin to add a portal in Portal Manager (/portal)', commonHeaders);
@@ -533,52 +533,66 @@ export async function onRequest(context) {
   }
 
   // ============================================================
-  //  BUILD PLAYLIST — Live TV + Movies (single playlist)
+  //  BUILD PLAYLIST — Live TV + Movies
   // ============================================================
   try {
     const cacheNow = Date.now();
-    const cachedEntry = playlistCache.get(resolved.id);
-
-    if (cachedEntry && (cacheNow - cachedEntry.time) < CACHE_DURATION && cachedEntry.m3u.includes('#EXTINF')) {
-      console.log('[PLAYLIST CACHE] Serving for portal:', resolved.name);
-      return new Response(cachedEntry.m3u, {
-        status: 200,
-        headers: {
-          ...commonHeaders,
-          'Content-Type': 'application/x-mpegurl; charset=utf-8',
-          'Cache-Control': 'no-store',
-        },
-      });
-    }
 
     let token = await getStalkerToken(portalConfig, resolved.id);
     await setupProfile(portalConfig, token);
 
-    // ── Fetch LIVE TV ──
+    // ── LIVE TV — Cache check (sirf data cache hoga, m3u nahi) ──
     let liveCatMap, liveChannels;
-    try {
-      [liveCatMap, liveChannels] = await Promise.all([
-        getCategories(portalConfig, token),
-        getChannels(portalConfig, token)
-      ]);
-      if (!Array.isArray(liveChannels) || liveChannels.length === 0) throw new Error('Empty live list');
-    } catch (innerErr) {
-      authTokenCache.delete(resolved.id);
-      token = await getStalkerToken(portalConfig, resolved.id);
-      await setupProfile(portalConfig, token);
-      [liveCatMap, liveChannels] = await Promise.all([
-        getCategories(portalConfig, token),
-        getChannels(portalConfig, token)
-      ]);
+    const cachedLiveEntry = liveCache.get(resolved.id);
+
+    if (cachedLiveEntry && (cacheNow - cachedLiveEntry.time) < CACHE_DURATION) {
+      // ✅ Cache se live data lo
+      liveCatMap = cachedLiveEntry.catMap;
+      liveChannels = cachedLiveEntry.channels;
+      console.log(`[LIVE CACHE] ${liveChannels.length} channels | portal:${resolved.name}`);
+    } else {
+      // 🔄 Fresh fetch karo
+      try {
+        [liveCatMap, liveChannels] = await Promise.all([
+          getCategories(portalConfig, token),
+          getChannels(portalConfig, token)
+        ]);
+        if (!Array.isArray(liveChannels) || liveChannels.length === 0)
+          throw new Error('Empty live list');
+
+        // ✅ Sirf data save karo cache mein
+        liveCache.set(resolved.id, {
+          catMap: liveCatMap,
+          channels: liveChannels,
+          time: cacheNow
+        });
+      } catch (innerErr) {
+        // Token refresh karke retry karo
+        authTokenCache.delete(resolved.id);
+        token = await getStalkerToken(portalConfig, resolved.id);
+        await setupProfile(portalConfig, token);
+        [liveCatMap, liveChannels] = await Promise.all([
+          getCategories(portalConfig, token),
+          getChannels(portalConfig, token)
+        ]);
+        liveCache.set(resolved.id, {
+          catMap: liveCatMap,
+          channels: liveChannels,
+          time: cacheNow
+        });
+      }
     }
 
-    // ── Fetch VOD (Movies) with cache ──
+    // ── VOD — Cache check ──
     let allMovies = [];
     const cachedVODEntry = vodCache.get(resolved.id);
+
     if (cachedVODEntry && (cacheNow - cachedVODEntry.time) < VOD_CACHE_DURATION) {
+      // ✅ Cache se movies lo
       allMovies = cachedVODEntry.movies;
-      console.log(`[VOD CACHE] Using ${allMovies.length} cached movies for portal:`, resolved.name);
+      console.log(`[VOD CACHE] ${allMovies.length} movies | portal:${resolved.name}`);
     } else {
+      // 🔄 Fresh fetch karo
       try {
         const vodCatMap = await getVODCategories(portalConfig, token);
         console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories`);
@@ -588,12 +602,13 @@ export async function onRequest(context) {
         }
       } catch (err) {
         console.error('[VOD ERROR]', err.message);
+        // Purana cache use karo agar available ho
         allMovies = cachedVODEntry?.movies || [];
       }
     }
 
     // ============================================================
-    //  BUILD M3U
+    //  M3U BUILD — Har request pe fresh (kyunki signed tokens + random movie tokens)
     // ============================================================
     let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
     let liveCount = 0, movieCount = 0;
@@ -610,6 +625,7 @@ export async function onRequest(context) {
       const channelId = extractChannelId(cmd);
       if (!channelId) continue;
 
+      // ✅ Fresh signed token — correct portal ID ke saath
       const signedToken = await signChannelId(channelId, resolved.id, SECRET_KEY);
       if (!signedToken) continue;
 
@@ -619,22 +635,20 @@ export async function onRequest(context) {
       liveCount++;
     }
 
-    // ─── 🎬 MOVIES (VOD) — /movie/RKDYIPTV/rkdy/{id}.mp4?token=xxx&p=yyy ───
+    // ─── 🎬 MOVIES ───
     for (const movie of allMovies) {
       const name = (movie.name || 'Unknown Movie').trim();
       const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_LOGO;
-      const category = movie._categoryTitle || 'Movies';
-      const group = category;
+      const group = movie._categoryTitle || 'Movies';
       const movieId = movie.id || '';
 
       if (!movieId) continue;
 
-      // Generate random token for movie URL (looks random to user)
       const randomToken = generateRandomToken();
 
-      // Movie URL with random token + portal ID
+      // ✅ resolved.id — is request ka correct portal ID
       const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${randomToken}&p=${resolved.id}`;
-      
+
       let displayName = name;
       if (movie.year && !name.includes(movie.year)) {
         displayName = `${name} (${movie.year})`;
@@ -646,10 +660,6 @@ export async function onRequest(context) {
     }
 
     console.log(`[PLAYLIST OK] Live:${liveCount} Movies:${movieCount} | token=${userToken.slice(0,8)}... portal=${resolved.name}`);
-
-    if (liveCount > 0 || movieCount > 0) {
-      playlistCache.set(resolved.id, { m3u, time: cacheNow });
-    }
 
     return new Response(m3u, {
       status: 200,
@@ -665,13 +675,50 @@ export async function onRequest(context) {
   } catch (err) {
     console.error('[PLAYLIST ERROR]', err.message);
     if (resolved) authTokenCache.delete(resolved.id);
-    const cachedEntry = resolved ? playlistCache.get(resolved.id) : null;
-    if (cachedEntry?.m3u?.includes('#EXTINF')) {
-      return new Response(cachedEntry.m3u, {
+
+    // ── Fallback — cached data se fresh m3u banao ──
+    const cachedLive = liveCache.get(resolved?.id);
+    const cachedVOD = vodCache.get(resolved?.id);
+
+    if (cachedLive?.channels?.length > 0) {
+      console.log('[FALLBACK] Building m3u from cached data');
+      let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
+
+      for (const ch of cachedLive.channels) {
+        const name = (ch.name || 'Unknown').trim();
+        const logo = (ch.logo?.trim()) || DEFAULT_LOGO;
+        const group = cachedLive.catMap[ch.tv_genre_id] || 'General';
+        const cmd = ch.cmd || '';
+        if (!cmd) continue;
+        const channelId = extractChannelId(cmd);
+        if (!channelId) continue;
+        const signedToken = await signChannelId(channelId, resolved.id, SECRET_KEY);
+        if (!signedToken) continue;
+        m3u += `#EXTINF:-1 tvg-id="${ch.id}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${name}\n`;
+        m3u += `${myBase}?action=stream&d=${signedToken}\n`;
+      }
+
+      for (const movie of (cachedVOD?.movies || [])) {
+        const name = (movie.name || 'Unknown Movie').trim();
+        const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_LOGO;
+        const group = movie._categoryTitle || 'Movies';
+        if (!movie.id) continue;
+        const randomToken = generateRandomToken();
+        const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movie.id}.mp4?token=${randomToken}&p=${resolved.id}`;
+        let displayName = name;
+        if (movie.year && !name.includes(movie.year)) {
+          displayName = `${name} (${movie.year})`;
+        }
+        m3u += `#EXTINF:-1 tvg-id="movie_${movie.id}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
+        m3u += `${movieUrl}\n`;
+      }
+
+      return new Response(m3u, {
         status: 200,
         headers: { ...commonHeaders, 'Content-Type': 'application/x-mpegurl; charset=utf-8' },
       });
     }
+
     return errorM3U('⚠️ Server Error', err.message, commonHeaders);
   }
 }
