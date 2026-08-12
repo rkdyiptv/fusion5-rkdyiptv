@@ -630,29 +630,30 @@ export async function onRequest(context) {
       liveCount++;
     }
 
-    // ─── 🎬 MOVIES (VOD) — /movie/RKDYIPTV/rkdy/{id}.mp4?token=xxx&portal=yyy ───
+     // ─── 🎬 MOVIES (VOD) — /movie/RKDYIPTV/rkdy/{id}.{ext}?token=xxx&p=xxx ───
     for (const movie of allMovies) {
       const name = (movie.name || 'Unknown Movie').trim();
       const logo = (movie.screenshot_uri || movie.pic || '').trim() || DEFAULT_LOGO;
       const category = movie._categoryTitle || 'Movies';
-      const group = category;  // Just use category name (already has language prefix like "HINDI | LATEST MOVIES")
+      const group = category;
       const movieId = movie.id || '';
 
       if (!movieId) continue;
 
-      // IMPORTANT: this must be the real playlist token (already saved
-      // in KV as token:{userToken}), not a freshly generated random
-      // value — movie.js looks this exact token up in KV to check
-      // validity/expiry AND to know which portal to use. A random,
-      // never-stored token here is what was causing "Invalid or
-      // expired token" (shows as a broken/404 stream to the player).
-      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${userToken}`;
-
+      // Auto-detect extension from portal data
+      const ext = getMovieExtension(movie);
+      
+      // Generate random token for URL
+      const randomToken = generateRandomToken();
+      
+      // Movie URL with correct extension and portal ID
+      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.${ext}?token=${randomToken}&p=${tokenData.portalId || ''}`;
+      
       let displayName = name;
       if (movie.year && !name.includes(movie.year)) {
         displayName = `${name} (${movie.year})`;
       }
-
+      
       m3u += `#EXTINF:-1 tvg-id="movie_${movieId}" tvg-name="${name}" tvg-logo="${logo}" group-title="${group}",${displayName}\n`;
       m3u += `${movieUrl}\n`;
       movieCount++;
