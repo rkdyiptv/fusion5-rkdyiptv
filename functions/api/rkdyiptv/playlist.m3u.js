@@ -20,9 +20,9 @@ const MAX_PLAYLIST    = 30;
 const MAX_STREAM      = 1000;
 
 // VOD Settings
-const VOD_MAX_CATEGORIES = 300;
-const VOD_PAGES_PER_CAT = 1;
-const VOD_BATCH_SIZE = 105;
+const VOD_MAX_CATEGORIES = 30000;
+const VOD_PAGES_PER_CAT = 10;
+const VOD_BATCH_SIZE = 1000;
 
 // ── Per-portal caches (keyed by portalId + portalName to prevent stale data) ──
 const authTokenCache = new Map();
