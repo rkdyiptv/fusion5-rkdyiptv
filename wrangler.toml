@@ -16,7 +16,7 @@ SITE_NAME = "RKDYIPTV"
 # ── KV Namespace Binding (Default/Production) ──
 [[kv_namespaces]]
 binding = "TOKENS"
-id = "ad182ef16bc242feb4f1bc2825b8eeb3"
+id = "fbe964428afb47a89198bb2f39269841"
 
 # ============================================================
 #  PREVIEW ENVIRONMENT
@@ -27,7 +27,7 @@ SITE_NAME = "RKDYIPTV-Preview"
 
 [[env.preview.kv_namespaces]]
 binding = "TOKENS"
-id = "ad182ef16bc242feb4f1bc2825b8eeb3"
+id = "fbe964428afb47a89198bb2f39269841"
 
 # ============================================================
 #  PRODUCTION ENVIRONMENT
@@ -38,4 +38,4 @@ SITE_NAME = "RKDYIPTV"
 
 [[env.production.kv_namespaces]]
 binding = "TOKENS"
-id = "ad182ef16bc242feb4f1bc2825b8eeb3"
+id = "fbe964428afb47a89198bb2f39269841"
