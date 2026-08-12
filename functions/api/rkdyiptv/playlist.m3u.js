@@ -11,7 +11,7 @@
 //  effect immediately without editing this file.
 // ============================================================
 
-import { getPortals } from '../../_lib/portals.js';
+import { resolvePortal } from '../../_lib/portals.js';
 
 const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 
@@ -40,33 +40,10 @@ const vodCache       = new Map();  // portalId -> { movies, time }
 const store          = new Map();  // rate limiting (unchanged)
 
 // ============================================================
-//  PORTAL RESOLUTION
+//  PORTAL RESOLUTION — see functions/_lib/portals.js for the actual
+//  toPortalConfig()/resolvePortal() implementation, shared with
+//  functions/movie.js so both resolve portals identically.
 // ============================================================
-function toPortalConfig(portal) {
-  return {
-    portalUrl: portal.url,
-    mac: portal.mac,
-    serialNo: portal.serial,
-    deviceId: portal.deviceId1,
-    deviceId2: portal.deviceId2,
-    timezone: DEFAULT_TIMEZONE,
-  };
-}
-
-// Picks the portal a token/stream should use: the one it was created
-// with, falling back to whichever portal is marked default, falling
-// back to the first portal that exists. Returns null if no portals
-// have been added in Portal Manager yet.
-async function resolvePortal(env, portalId) {
-  const portals = await getPortals(env);
-  if (portals.length === 0) return null;
-  const match =
-    (portalId && portals.find(p => p.id === portalId)) ||
-    portals.find(p => p.isDefault) ||
-    portals[0];
-  if (!match) return null;
-  return { id: match.id, name: match.name, config: toPortalConfig(match) };
-}
 
 // ============================================================
 //  CRYPTO
@@ -259,15 +236,6 @@ function extractChannelId(cmd) {
   if (m) return m[1];
   const n = cmd.match(/(\d+)$/);
   return n ? n[1] : null;
-}
-
-// ============================================================
-//  RANDOM TOKEN GENERATOR (for movie URLs)
-// ============================================================
-function generateRandomToken() {
-  const bytes = new Uint8Array(12);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ============================================================
@@ -672,16 +640,13 @@ export async function onRequest(context) {
 
       if (!movieId) continue;
 
-      // Generate random token for this movie URL
-      const randomToken = generateRandomToken();
-
-      // Xtream Codes style URL — player will detect as VOD.
-      // "portal" tells /movie which portal's Stalker API to call —
-      // functions/movie.js must read this param (or its equivalent)
-      // and use the same Portal Manager lookup, otherwise it will keep
-      // resolving against whatever portal it's hardcoded to, which is
-      // the cause of the 404s on non-default portals.
-      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${randomToken}&portal=${resolved.id}`;
+      // IMPORTANT: this must be the real playlist token (already saved
+      // in KV as token:{userToken}), not a freshly generated random
+      // value — movie.js looks this exact token up in KV to check
+      // validity/expiry AND to know which portal to use. A random,
+      // never-stored token here is what was causing "Invalid or
+      // expired token" (shows as a broken/404 stream to the player).
+      const movieUrl = `${hostBase}/movie/RKDYIPTV/rkdy/${movieId}.mp4?token=${userToken}`;
 
       let displayName = name;
       if (movie.year && !name.includes(movie.year)) {
