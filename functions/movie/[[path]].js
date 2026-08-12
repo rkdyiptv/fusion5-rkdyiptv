@@ -1,16 +1,52 @@
 // ============================================================
-//  RKDYIPTV FUSION5 — Movie Stream Handler (Dynamic Route)
+//  RKDYIPTV FUSION5 — Movie Stream Handler (Signed Token)
 //  File: functions/movie/[[path]].js
-//  URL Format: /movie/RKDYIPTV/rkdy/{id}.{ext}?token={random}
+//  URL: /movie/RKDYIPTV/rkdy/{id}.{ext}?token={signed_movie_token}
 // ============================================================
 
 import { resolvePortal } from '../_lib/portals.js';
 
-const TELEGRAM_URL = 'https://t.me/rkdyiptv';
 const STALKER_TOKEN_DURATION = 60 * 60 * 1000;
+const TOKEN_WINDOW = 24 * 60 * 60 * 1000;
 
 // Per-portal auth token cache
 const authTokenCache = new Map();
+
+// ============================================================
+//  CRYPTO
+// ============================================================
+async function hmacSha256(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  return Array.from(new Uint8Array(sig))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getTimeSlot(time) {
+  return Math.floor((time || Date.now()) / TOKEN_WINDOW);
+}
+
+async function verifyMovieToken(encoded, SECRET_KEY) {
+  try {
+    if (!encoded) return { valid: false };
+    const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '=='.slice(0, (4 - base64.length % 4) % 4);
+    const payload = JSON.parse(atob(padded));
+    if (!payload.m || !payload.e || !payload.s || !payload.h) return { valid: false };
+    if (Date.now() > payload.e) return { valid: false };
+    
+    const portalId = payload.p || '';
+    const cur = (await hmacSha256(SECRET_KEY, `movie_${payload.m}_${portalId}_${getTimeSlot()}`)).slice(0, 20);
+    const prev = (await hmacSha256(SECRET_KEY, `movie_${payload.m}_${portalId}_${getTimeSlot() - 1}`)).slice(0, 20);
+    
+    if (payload.h !== cur && payload.h !== prev) return { valid: false };
+    return { valid: true, movieId: payload.m, portalId: portalId };
+  } catch { return { valid: false }; }
+}
 
 // ============================================================
 //  STALKER HELPERS
@@ -64,10 +100,11 @@ async function getVODStreamUrl(portalConfig, token, movieId) {
 //  MAIN HANDLER
 // ============================================================
 export async function onRequest(context) {
-  const { request, env, params } = context;
+  const { request, env } = context;
+  const SECRET_KEY = env.SECURITY_KEY || 'rkdyiptv@2024#secret';
   const url = new URL(request.url);
   const path = url.pathname;
-  const userToken = url.searchParams.get('token');
+  const movieToken = url.searchParams.get('token');
 
   const commonHeaders = {
     'Access-Control-Allow-Origin': '*',
@@ -76,31 +113,47 @@ export async function onRequest(context) {
 
   console.log(`[MOVIE REQ] path=${path}`);
 
-  // ── Extract movie ID from path ──
-  // Path: /movie/RKDYIPTV/rkdy/12345.mp4
+  // ── Extract movie ID from path (for validation only) ──
   const match = path.match(/^\/movie\/RKDYIPTV\/rkdy\/(\d+)\.(mp4|mkv|avi|mpg|ts|m3u8)$/i);
 
   if (!match) {
     console.log('[MOVIE] Invalid URL format:', path);
-    return new Response('Invalid movie URL format: ' + path, {
+    return new Response('Invalid movie URL format', {
       status: 404,
       headers: commonHeaders,
     });
   }
 
-  const movieId = match[1];
-  const extension = match[2];
+  const urlMovieId = match[1];
 
-  // ── Validate token exists ──
-  if (!userToken) {
+  // ── Validate signed token ──
+  if (!movieToken) {
     return new Response('Token required', {
       status: 401,
       headers: commonHeaders,
     });
   }
 
-  // ── Resolve portal from Portal Manager ──
-  const resolved = await resolvePortal(env, null);
+  const verified = await verifyMovieToken(movieToken, SECRET_KEY);
+  if (!verified.valid) {
+    console.log('[MOVIE] Invalid token');
+    return new Response('Invalid or expired token', {
+      status: 403,
+      headers: commonHeaders,
+    });
+  }
+
+  // Verify movie ID in URL matches token (prevent tampering)
+  if (verified.movieId !== urlMovieId) {
+    console.log(`[MOVIE] ID mismatch: url=${urlMovieId} token=${verified.movieId}`);
+    return new Response('Token/URL mismatch', {
+      status: 403,
+      headers: commonHeaders,
+    });
+  }
+
+  // ── Resolve the correct portal from token ──
+  const resolved = await resolvePortal(env, verified.portalId);
   if (!resolved) {
     return new Response('No portal configured. Add one at /portal', {
       status: 500,
@@ -109,21 +162,22 @@ export async function onRequest(context) {
   }
   const portalConfig = resolved.config;
 
-  // ── Fetch stream URL from Stalker ──
+  console.log(`[MOVIE] Using portal: ${resolved.name} for movie ${urlMovieId}`);
+
+  // ── Fetch stream URL from correct portal ──
   try {
     let stalkerToken = await getStalkerToken(portalConfig, resolved.id);
     await setupProfile(portalConfig, stalkerToken);
-    let realUrl = await getVODStreamUrl(portalConfig, stalkerToken, movieId);
+    let realUrl = await getVODStreamUrl(portalConfig, stalkerToken, urlMovieId);
 
-    // Retry on failure
     if (!realUrl || !realUrl.startsWith('http')) {
       authTokenCache.delete(resolved.id);
       stalkerToken = await getStalkerToken(portalConfig, resolved.id);
       await setupProfile(portalConfig, stalkerToken);
-      realUrl = await getVODStreamUrl(portalConfig, stalkerToken, movieId);
+      realUrl = await getVODStreamUrl(portalConfig, stalkerToken, urlMovieId);
     }
 
-    console.log(`[MOVIE OK] ID:${movieId} portal=${resolved.name}`);
+    console.log(`[MOVIE OK] ID:${urlMovieId} portal=${resolved.name}`);
 
     return new Response(null, {
       status: 302,
