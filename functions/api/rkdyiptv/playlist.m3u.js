@@ -535,9 +535,18 @@ export async function onRequest(context) {
   try {
     const cacheNow = Date.now();
 
+    // ✅ Force fresh handshake — old cached tokens might not have profile setup
+    authTokenCache.delete(resolved.id);
     let token = await getStalkerToken(portalConfig, resolved.id);
     await setupProfile(portalConfig, token);
-
+    
+    // ✅ Extra: account_info call to fully authorize VOD session
+    try {
+      await fetch(
+        `${portalConfig.portalUrl}/server/load.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`,
+        { headers: getStalkerHeaders(portalConfig, token) }
+      );
+    } catch (_) {}
     // ── LIVE TV data (cached per portal URL+MAC — prevents stale data) ──
     let liveCatMap, liveChannels;
     const cachedLiveEntry = liveCache.get(CACHE_KEY);
