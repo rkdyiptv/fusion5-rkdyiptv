@@ -1,8 +1,6 @@
 // ============================================================
-//  RKDYIPTV — Debug Endpoint
+//  RKDYIPTV — Debug Endpoint v2 (VOD deep diagnostics)
 //  File: functions/debug.js
-//  Route: /debug?token=YOUR_TOKEN
-//  Shows: Portal info, cache state, live/VOD test fetch
 // ============================================================
 
 import { resolvePortal, getPortals } from './_lib/portals.js';
@@ -20,32 +18,10 @@ function getStalkerHeaders(portalConfig, token = null) {
   return h;
 }
 
-async function getStalkerToken(portalConfig) {
-  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=handshake&prehash=0&token=&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig) });
+async function callAPI(url, headers) {
+  const res = await fetch(url, { headers });
   const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error('Handshake failed: ' + text.slice(0, 100)); }
-  if (!data.js?.token) throw new Error('No token in handshake response');
-  return data.js.token;
-}
-
-async function getVODCategories(portalConfig, token) {
-  const url = `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { return { error: 'Parse failed', raw: text.slice(0, 200) }; }
-  return data.js || {};
-}
-
-async function getFirstVODMovies(portalConfig, token, categoryId) {
-  const url = `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=${categoryId}&sortby=added&p=1&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { return { error: 'Parse failed' }; }
-  return data.js || {};
+  return { status: res.status, text, url };
 }
 
 export async function onRequest(context) {
@@ -53,194 +29,94 @@ export async function onRequest(context) {
   const url = new URL(request.url);
   const userToken = url.searchParams.get('token');
 
-  const commonHeaders = {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-store',
-  };
-
-  if (!env.TOKENS) {
-    return new Response('<h1>❌ KV binding TOKENS missing</h1>', {
-      status: 500, headers: commonHeaders,
-    });
-  }
-
-  const debug = {
-    step1_input: { userToken: userToken || 'MISSING' },
-    step2_portals: null,
-    step3_tokenData: null,
-    step4_resolvedPortal: null,
-    step5_liveTest: null,
-    step6_vodTest: null,
-    step7_firstMovies: null,
-    errors: [],
-  };
+  const debug = { steps: [] };
 
   try {
-    // ── STEP 2: List all portals ──
     const portals = await getPortals(env);
-    debug.step2_portals = {
-      count: portals.length,
-      portals: portals.map(p => ({
-        id: p.id,
-        name: p.name,
-        url: p.url,
-        mac: p.mac,
-        serial: p.serial,
-        isDefault: !!p.isDefault,
-      })),
+    debug.steps.push({ '1_portals_count': portals.length });
+
+    if (!portals.length) {
+      return renderHTML(debug, '❌ No portals');
+    }
+
+    const p = portals[0];
+    const portalConfig = {
+      portalUrl: p.url,
+      mac: p.mac,
+      serialNo: p.serial,
+      deviceId: p.deviceId1,
+      deviceId2: p.deviceId2,
     };
 
-    if (!userToken) {
-      return renderHTML(debug, '⚠️ No token provided. Use: /debug?token=YOUR_TOKEN');
-    }
+    // STEP 1: Handshake
+    const hs = await callAPI(
+      `${portalConfig.portalUrl}/server/load.php?type=stb&action=handshake&prehash=0&token=&JsHttpRequest=1-xml`,
+      getStalkerHeaders(portalConfig)
+    );
+    debug.steps.push({ '2_handshake_status': hs.status, '2_handshake_raw': hs.text.slice(0, 300) });
 
-    // ── STEP 3: Get token data ──
-    const tokenData = await env.TOKENS.get(`token:${userToken}`, { type: 'json' });
-    if (!tokenData) {
-      debug.errors.push('Token not found in KV');
-      return renderHTML(debug, '❌ Token not found');
-    }
-    debug.step3_tokenData = tokenData;
-
-    // ── STEP 4: Resolve portal ──
-    const resolved = await resolvePortal(env, tokenData.portalId);
-    if (!resolved) {
-      debug.errors.push('No portal could be resolved');
-      return renderHTML(debug, '❌ No portal resolved');
-    }
-    debug.step4_resolvedPortal = {
-      id: resolved.id,
-      name: resolved.name,
-      config: resolved.config,
-      matchType: tokenData.portalId === resolved.id ? '✅ EXACT MATCH' : '⚠️ FALLBACK (token portal not found)',
-    };
-
-    const portalConfig = resolved.config;
-
-    // ── STEP 5: Test Stalker handshake ──
     let stalkerToken;
     try {
-      stalkerToken = await getStalkerToken(portalConfig);
-      debug.step5_liveTest = {
-        handshake: '✅ SUCCESS',
-        stalkerToken: stalkerToken.slice(0, 16) + '...',
-      };
-    } catch (err) {
-      debug.step5_liveTest = { handshake: '❌ FAILED', error: err.message };
-      debug.errors.push('Handshake failed: ' + err.message);
-      return renderHTML(debug, '❌ Handshake failed');
+      stalkerToken = JSON.parse(hs.text).js.token;
+      debug.steps.push({ '2_handshake_token': stalkerToken.slice(0, 20) + '...' });
+    } catch {
+      return renderHTML(debug, '❌ Handshake parse failed');
     }
 
-    // ── STEP 6: Fetch VOD categories ──
-    try {
-      const vodCats = await getVODCategories(portalConfig, stalkerToken);
-      const catArray = Array.isArray(vodCats) ? vodCats : [];
-      debug.step6_vodTest = {
-        totalCategories: catArray.length,
-        firstFive: catArray.slice(0, 5).map(c => ({ id: c.id, title: c.title })),
-        raw: catArray.length === 0 ? vodCats : undefined,
-      };
+    // STEP 2: Get Profile (IMPORTANT for authorization)
+    const profileUrl = `${portalConfig.portalUrl}/server/load.php?type=stb&action=get_profile&hd=1&sn=${portalConfig.serialNo}&stb_type=MAG250&client_type=STB&image_version=218&video_out=hdmi&device_id=${portalConfig.deviceId}&device_id2=${portalConfig.deviceId2}&hw_version=1.7-BD-00&not_valid_token=0&timestamp=${Math.floor(Date.now()/1000)}&JsHttpRequest=1-xml`;
+    const prof = await callAPI(profileUrl, getStalkerHeaders(portalConfig, stalkerToken));
+    debug.steps.push({ '3_profile_status': prof.status, '3_profile_raw': prof.text.slice(0, 500) });
 
-      // ── STEP 7: Fetch first 5 movies from first category ──
-      if (catArray.length > 0) {
-        const firstCat = catArray.find(c => c.id && c.id !== '*') || catArray[0];
-        const movies = await getFirstVODMovies(portalConfig, stalkerToken, firstCat.id);
-        const movieList = movies?.data || [];
-        debug.step7_firstMovies = {
-          categoryUsed: firstCat.title,
-          categoryId: firstCat.id,
-          totalMoviesInCat: movies?.total_items || 0,
-          firstFive: movieList.slice(0, 5).map(m => ({
-            id: m.id,
-            name: m.name,
-            year: m.year,
-            added: m.added,
-          })),
-        };
-      }
-    } catch (err) {
-      debug.step6_vodTest = { error: err.message };
-      debug.errors.push('VOD fetch failed: ' + err.message);
-    }
+    // STEP 3: Get Account Info (auth check)
+    const accInfo = await callAPI(
+      `${portalConfig.portalUrl}/server/load.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`,
+      getStalkerHeaders(portalConfig, stalkerToken)
+    );
+    debug.steps.push({ '4_account_status': accInfo.status, '4_account_raw': accInfo.text.slice(0, 500) });
 
-    return renderHTML(debug, '✅ Debug complete');
+    // STEP 4: Try VOD categories (basic)
+    const vod1 = await callAPI(
+      `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml`,
+      getStalkerHeaders(portalConfig, stalkerToken)
+    );
+    debug.steps.push({ '5_vod_categories_status': vod1.status, '5_vod_categories_raw': vod1.text.slice(0, 500) });
+
+    // STEP 5: Try VOD with full params (like IPTV app)
+    const vod2 = await callAPI(
+      `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_categories&p=1&JsHttpRequest=1-xml`,
+      getStalkerHeaders(portalConfig, stalkerToken)
+    );
+    debug.steps.push({ '6_vod_categories_v2_status': vod2.status, '6_vod_categories_v2_raw': vod2.text.slice(0, 500) });
+
+    // STEP 6: Try get_ordered_list directly
+    const vod3 = await callAPI(
+      `${portalConfig.portalUrl}/server/load.php?type=vod&action=get_ordered_list&category=*&genre=*&force_ch_link_check=&fav=0&sortby=added&hd=0&not_ended=0&p=1&JsHttpRequest=1-xml`,
+      getStalkerHeaders(portalConfig, stalkerToken)
+    );
+    debug.steps.push({ '7_vod_ordered_status': vod3.status, '7_vod_ordered_raw': vod3.text.slice(0, 500) });
+
+    return renderHTML(debug, '✅ Deep VOD debug complete');
 
   } catch (err) {
-    debug.errors.push('Fatal: ' + err.message);
-    return renderHTML(debug, '❌ Fatal error');
+    debug.error = err.message;
+    return renderHTML(debug, '❌ Error');
   }
 }
 
 function renderHTML(debug, title) {
   const json = JSON.stringify(debug, null, 2);
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>RKDYIPTV Debug</title>
+  return new Response(`<!DOCTYPE html>
+<html><head><title>Debug v2</title>
 <style>
-  body {
-    background: #0b0b12;
-    color: #eee;
-    font-family: 'Courier New', monospace;
-    padding: 20px;
-    line-height: 1.5;
-  }
-  h1 {
-    color: #4ea1ff;
-    border-bottom: 2px solid #4ea1ff;
-    padding-bottom: 10px;
-  }
-  pre {
-    background: #000;
-    padding: 20px;
-    border-radius: 8px;
-    border: 1px solid #333;
-    overflow-x: auto;
-    font-size: 13px;
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-  .success { color: #2ed573; }
-  .error { color: #ff5555; }
-  .warn { color: #ffaa33; }
-  .info-box {
-    background: rgba(78,161,255,0.1);
-    border: 1px solid rgba(78,161,255,0.3);
-    padding: 15px;
-    border-radius: 8px;
-    margin: 15px 0;
-    font-family: Arial, sans-serif;
-  }
-  code {
-    background: #222;
-    padding: 2px 6px;
-    border-radius: 4px;
-    color: #ffaa33;
-  }
-</style>
-</head>
+  body{background:#0b0b12;color:#eee;font-family:monospace;padding:20px}
+  h1{color:#4ea1ff}
+  pre{background:#000;padding:15px;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px}
+</style></head>
 <body>
-  <h1>🔍 RKDYIPTV Debug — ${title}</h1>
-  
-  <div class="info-box">
-    <b>Usage:</b> <code>/debug?token=YOUR_PLAYLIST_TOKEN</code><br>
-    <b>What to check:</b>
-    <ol>
-      <li><b>step2_portals</b> — Kaunse portals hain KV mein</li>
-      <li><b>step3_tokenData</b> — Token mein saved portalId + portalName</li>
-      <li><b>step4_resolvedPortal</b> — Actually kaunsa portal use ho raha (check <code>matchType</code>)</li>
-      <li><b>step6_vodTest</b> — VOD categories jo actually fetch hui</li>
-      <li><b>step7_firstMovies</b> — Pehle 5 movies naam ke saath</li>
-    </ol>
-  </div>
-
-  <pre>${json.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-</body>
-</html>`;
-
-  return new Response(html, {
-    status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+<h1>🔍 Deep VOD Debug — ${title}</h1>
+<pre>${json.replace(/</g, '&lt;')}</pre>
+</body></html>`, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
 }
