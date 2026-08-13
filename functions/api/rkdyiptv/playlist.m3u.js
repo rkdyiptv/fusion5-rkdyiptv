@@ -16,7 +16,7 @@ const VOD_CACHE_DURATION = 0;
 const TELEGRAM_URL    = 'https://t.me/rkdyiptv';
 const DEFAULT_LOGO    = 'https://i.ibb.co/VWVcf4t5/RKDYIPTV.jpg';
 const RATE_WINDOW     = 60 * 60 * 1000;
-const MAX_PLAYLIST    = 30;
+const MAX_PLAYLIST    = 300;
 const MAX_STREAM      = 1000;
 
 // VOD Settings
