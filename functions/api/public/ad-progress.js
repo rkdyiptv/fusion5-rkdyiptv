@@ -6,7 +6,7 @@
 // ============================================================
 
 const REQUIRED_ADS = 5;
-const SESSION_TTL = 900; // 15 min window to finish watching ads
+const SESSION_TTL = 480; // 15 min window to finish watching ads
 
 function generateSessionId() {
   const bytes = new Uint8Array(16);
