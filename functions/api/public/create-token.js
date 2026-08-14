@@ -11,8 +11,8 @@ import { getPortals } from '../../_lib/portals.js';
 const REQUIRED_ADS      = 5;
 const FIXED_HOURS       = 24;
 const MAX_TOKENS_PER_IP_PER_DAY = 5;
-const COOLDOWN_MS       = 15 * 60 * 1000;
-const COOLDOWN_TTL_SECONDS = 900;
+const COOLDOWN_MS       = 8 * 60 * 1000;
+const COOLDOWN_TTL_SECONDS = 480;
 const STATS_KEY         = 'stats:playlists';
 
 function generateTokenId() {
