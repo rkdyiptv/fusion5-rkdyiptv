@@ -350,7 +350,7 @@ async function generatePlaylist() {
     generatedUrl = data.playlistUrl;
     document.getElementById('result-url').textContent = generatedUrl;
     const expiryDate = new Date(data.expiryAt);
-    document.getElementById('result-expiry').textContent = '⏰ Valid for 24h — expires: ' + expiryDate.toLocaleString();
+    document.getElementById('result-expiry').textContent = '⏰ Valid for 48h — expires: ' + expiryDate.toLocaleString();
 
     document.getElementById('generate-section').style.display = 'none';
     document.getElementById('result-section').style.display = 'block';
