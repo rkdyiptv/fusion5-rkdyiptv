@@ -1,5 +1,5 @@
 // ============================================================
-//  RKDYIPTV — Public Playlist Generator (Watch 5 Ads → 24h Playlist)
+//  RKDYIPTV — Public Playlist Generator (Watch 5 Ads → 48h Playlist)
 //  File: functions/generate.js
 //  Route: /generate
 // ============================================================
@@ -143,8 +143,8 @@ export async function onRequest(context) {
 </head>
 <body>
   <div class="card">
-    <div class="logo-emoji">❤️</div>
-    <h1>RKDYIPTV PLAYLIST</h1>
+    <div class="logo-emoji">🎬</div>
+    <h1>RKDYIPTV Playlist</h1>
     <div class="sub">Watch 5 ads → unlock a 48h playlist link</div>
 
     <div id="cooldown-section" class="cooldown-box"></div>
@@ -171,7 +171,7 @@ export async function onRequest(context) {
       <button class="btn copy" id="copy-btn" onclick="copyUrl()" disabled>📋 Copy Link</button>
     </div>
 
-    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join Telegram</a>
+    <a class="btn telegram" href="https://t.me/rkdyiptv" target="_blank" rel="noopener noreferrer">📣 Join @rkdyiptv on Telegram</a>
 
     <div class="stats-row" id="stats-row">
       <div>Today: <b id="stat-today">—</b></div>
@@ -181,6 +181,7 @@ export async function onRequest(context) {
 
 <script>
 const REQUIRED_ADS = 5;
+const MIN_AD_WATCH_MS = 10000; // 10 seconds — enforced silently in the background
 let sessionId = null;
 let watchedCount = 0;
 let generatedUrl = '';
@@ -302,8 +303,18 @@ async function watchAd() {
   btn.textContent = 'Loading ad...';
   showAdMsg('', false);
 
+  const adStartTime = Date.now();
+
   try {
     await show_11341413();
+
+    const watchedMs = Date.now() - adStartTime;
+    if (watchedMs < MIN_AD_WATCH_MS) {
+      btn.disabled = false;
+      btn.textContent = 'Watch Ad (' + watchedCount + '/' + REQUIRED_ADS + ') — Retry';
+      showAdMsg('⚠️ Please watch the full ad before continuing.', true);
+      return;
+    }
 
     const res = await fetch('/api/public/ad-progress', {
       method: 'POST',
