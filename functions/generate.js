@@ -144,7 +144,7 @@ export async function onRequest(context) {
 <body>
   <div class="card">
     <div class="logo-emoji">❤️</div>
-    <h1>RKDYIPTV Playlist</h1>
+    <h1>RKDYIPTV M3U PLAYLIST</h1>
     <div class="sub">Watch 5 ads → unlock a 48h playlist link</div>
 
     <div id="cooldown-section" class="cooldown-box"></div>
