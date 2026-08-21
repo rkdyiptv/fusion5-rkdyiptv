@@ -290,7 +290,7 @@ export async function onRequest(context) {
       <label style="display:block; font-size:12px; color:#999; margin-bottom:8px;">
         ⏱️ Select Duration
       </label>
-      <div class="duration-grid">
+      <div class="duration-grid" id="duration-grid">
         <div class="dur-btn" data-hours="1">1h</div>
         <div class="dur-btn" data-hours="2">2h</div>
         <div class="dur-btn" data-hours="3">3h</div>
@@ -304,6 +304,24 @@ export async function onRequest(context) {
         <div class="dur-btn" data-hours="720">30d</div>
       </div>
 
+      <label style="display:block; font-size:12px; color:#999; margin-bottom:8px; margin-top:15px;">
+        📱 Device Connections
+      </label>
+      <div class="duration-grid" id="device-grid">
+        <div class="dur-btn" data-devices="1">1</div>
+        <div class="dur-btn" data-devices="2">2</div>
+        <div class="dur-btn" data-devices="3">3</div>
+        <div class="dur-btn" data-devices="4">4</div>
+        <div class="dur-btn" data-devices="5">5</div>
+        <div class="dur-btn" data-devices="10">10</div>
+        <div class="dur-btn" data-devices="15">15</div>
+        <div class="dur-btn" data-devices="20">20</div>
+        <div class="dur-btn" data-devices="30">30</div>
+        <div class="dur-btn" data-devices="50">50</div>
+        <div class="dur-btn" data-devices="100">100</div>
+        <div class="dur-btn" data-devices="unlimited">∞</div>
+      </div>
+
       <button class="btn" id="gen-btn" onclick="generateToken()" disabled>
         Select Duration First
       </button>
@@ -313,6 +331,9 @@ export async function onRequest(context) {
         <div style="color:#2ed573;font-weight:bold;margin-bottom:8px;">✅ Token Created!</div>
         <div style="font-size:12px;color:#aaa;margin-bottom:4px;">
           📡 Portal: <b id="new-portal-name" style="color:#b16cff;"></b>
+        </div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:4px;">
+          📱 Devices Allowed: <b id="new-device-limit" style="color:#4ea1ff;"></b>
         </div>
         <div style="font-size:12px;color:#ccc;margin-bottom:6px;">Playlist URL:</div>
         <div class="token-value" id="new-url"></div>
@@ -359,6 +380,7 @@ export async function onRequest(context) {
 
 <script>
 let selectedHours = null;
+let selectedDeviceLimit = null;
 let newTokenUrl = '';
 const PORTALS = ${portalsJson};
 const currentPlaylistBase = window.location.origin + '/api/rkdyiptv/playlist.m3u';
@@ -368,31 +390,62 @@ function onPortalChange() {
   const val = document.getElementById('portal-select').value;
   const warn = document.getElementById('no-portal-warn');
   warn.style.display = val ? 'none' : 'block';
+  updateGenButtonState();
 }
 
 // Run on load
 onPortalChange();
 
+function formatDurLabel(hours) {
+  if (hours < 24) return hours + 'h';
+  return (hours / 24) + 'd';
+}
+
+function updateGenButtonState() {
+  const genBtn = document.getElementById('gen-btn');
+  const portalVal = document.getElementById('portal-select').value;
+  if (!portalVal) {
+    genBtn.disabled = true;
+    genBtn.textContent = 'Select a Portal First';
+    return;
+  }
+  if (!selectedHours) {
+    genBtn.disabled = true;
+    genBtn.textContent = 'Select Duration First';
+    return;
+  }
+  if (selectedDeviceLimit === null) {
+    genBtn.disabled = true;
+    genBtn.textContent = 'Select Device Limit';
+    return;
+  }
+  genBtn.disabled = false;
+  const devLabel = selectedDeviceLimit === 'unlimited' ? '∞' : selectedDeviceLimit;
+  genBtn.textContent = 'Generate Token (' + formatDurLabel(selectedHours) + ', ' + devLabel + ' device' + (selectedDeviceLimit === 1 ? '' : 's') + ')';
+}
+
 // Duration button selection
-document.querySelectorAll('.dur-btn').forEach(btn => {
+document.querySelectorAll('#duration-grid .dur-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('#duration-grid .dur-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     selectedHours = parseInt(btn.dataset.hours, 10);
-    const genBtn = document.getElementById('gen-btn');
-    const portalVal = document.getElementById('portal-select').value;
-    if (!portalVal) {
-      genBtn.disabled = true;
-      genBtn.textContent = 'Select a Portal First';
-      return;
-    }
-    genBtn.disabled = false;
-    genBtn.textContent = 'Generate Token (' + btn.textContent + ')';
+    updateGenButtonState();
+  });
+});
+
+// Device-limit button selection
+document.querySelectorAll('#device-grid .dur-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#device-grid .dur-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedDeviceLimit = btn.dataset.devices === 'unlimited' ? 'unlimited' : parseInt(btn.dataset.devices, 10);
+    updateGenButtonState();
   });
 });
 
 async function generateToken() {
-  if (!selectedHours) return;
+  if (!selectedHours || selectedDeviceLimit === null) return;
 
   const portalId = document.getElementById('portal-select').value;
 
@@ -412,13 +465,13 @@ async function generateToken() {
   status.textContent = '⏳ Please wait...';
 
   try {
-    // ✅ portalId correctly sent to backend
     const res = await fetch('/api/admin/create-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         hours: selectedHours,
         portalId: portalId,
+        deviceLimit: selectedDeviceLimit,
       }),
     });
 
@@ -428,14 +481,14 @@ async function generateToken() {
       // ✅ Verify backend returned same portal
       if (data.portalId !== portalId) {
         status.textContent = '⚠️ Warning: Portal mismatch! Expected ' + portalName + ' but got ' + data.portalName;
-        btn.disabled = false;
-        btn.textContent = 'Generate Token';
+        updateGenButtonState();
         return;
       }
 
       newTokenUrl = currentPlaylistBase + '?token=' + encodeURIComponent(data.token);
       document.getElementById('new-url').textContent = newTokenUrl;
       document.getElementById('new-portal-name').textContent = data.portalName || portalName;
+      document.getElementById('new-device-limit').textContent = (data.deviceLimit === 'unlimited') ? 'Unlimited' : data.deviceLimit;
       document.getElementById('new-token-result').style.display = 'block';
       status.textContent = '✅ Token created for portal: ' + (data.portalName || portalName);
       loadTokens();
@@ -446,8 +499,7 @@ async function generateToken() {
     status.textContent = '❌ ' + err.message;
   }
 
-  btn.disabled = false;
-  btn.textContent = 'Generate Token';
+  updateGenButtonState();
 }
 
 function copyNewUrl() {
@@ -473,7 +525,7 @@ async function loadTokens() {
 
 function renderStats(tokens) {
   const total = tokens.length;
-  const locked = tokens.filter(t => t.device).length;
+  const locked = tokens.filter(t => (Array.isArray(t.devices) ? t.devices.length : (t.device ? 1 : 0)) > 0).length;
   const unlocked = total - locked;
   const now = Date.now();
   const expiringSoon = tokens.filter(t => (t.expiryAt - now) < 3600000).length;
@@ -502,11 +554,17 @@ function renderTokens(tokens) {
   container.innerHTML = tokens.map(t => {
     const timeLeft = t.expiryAt - now;
     const isExpiring = timeLeft < 3600000;
-    const isLocked = !!t.device;
+    const deviceCount = Array.isArray(t.devices) ? t.devices.length : (t.device ? 1 : 0);
+    const deviceLimit = (t.deviceLimit !== undefined && t.deviceLimit !== null) ? t.deviceLimit : 1;
+    const isUnlimited = deviceLimit === 'unlimited';
+    const isFull = !isUnlimited && deviceCount >= deviceLimit;
+    const isLocked = deviceCount > 0;
 
-    const statusBadge = isLocked
-      ? '<span class="status-badge locked">🔒 Locked</span>'
-      : '<span class="status-badge unlocked">🔓 Unlocked</span>';
+    const statusBadge = isFull
+      ? '<span class="status-badge locked">🔒 Full (' + deviceCount + '/' + deviceLimit + ')</span>'
+      : isLocked
+        ? '<span class="status-badge unlocked">📱 ' + deviceCount + '/' + (isUnlimited ? '∞' : deviceLimit) + '</span>'
+        : '<span class="status-badge unlocked">🔓 Unused (0/' + (isUnlimited ? '∞' : deviceLimit) + ')</span>';
 
     // ✅ Portal badge in every token
     const portalBadge = t.portalName
@@ -528,9 +586,9 @@ function renderTokens(tokens) {
           <div>⌛ <b>Time Left:</b> \${formatDuration(timeLeft)}</div>
           <div>📊 <b>Fetches:</b> \${t.fetchCount || 0}</div>
           \${t.portalId ? '<div>🆔 <b>Portal ID:</b> ' + t.portalId.slice(0,8) + '...</div>' : ''}
-          \${isLocked ? '<div>📱 <b>Device:</b> ' + (t.lockedUA || 'Unknown').substring(0, 40) + '...</div>' : ''}
+          \${isLocked ? '<div>📱 <b>Device UA:</b> ' + (t.lockedUA || 'Unknown').substring(0, 40) + '...</div>' : ''}
           \${t.firstUseIP ? '<div>🌐 <b>IP:</b> ' + t.firstUseIP + '</div>' : ''}
-          \${t.lockedAt ? '<div>🔒 <b>Locked:</b> ' + formatTime(t.lockedAt) + '</div>' : ''}
+          \${t.lockedAt ? '<div>🔒 <b>First Locked:</b> ' + formatTime(t.lockedAt) + '</div>' : ''}
         </div>
         <div class="token-actions">
           <button class="action-btn copy-btn" onclick="copyUrl('\${playlistUrl}', this)">📋 Copy URL</button>
