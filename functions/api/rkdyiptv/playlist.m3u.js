@@ -494,21 +494,37 @@ export async function onRequest(context) {
 
   console.log(`[PLAYLIST] Portal: ${resolved.name} (id=${resolved.id}) | url=${portalConfig.portalUrl} | token=${userToken.slice(0,8)}...`);
 
+  // ============================================================
+  //  MULTI-DEVICE LOCK CHECK
+  // ============================================================
   const currentDevice = await computeDeviceFingerprint(request, SECRET_KEY);
 
-  if (tokenData.device === null) {
-    tokenData.device = currentDevice;
-    tokenData.lockedAt = now;
-    tokenData.lockedUA = (request.headers.get('user-agent') || '').substring(0, 100);
-    tokenData.firstUseIP = ip;
-    console.log(`[DEVICE LOCKED] token=${userToken.slice(0,8)}...`);
-  } else if (tokenData.device !== currentDevice) {
-    console.log(`[DEVICE MISMATCH] token=${userToken.slice(0,8)}...`);
+  // Backward-compat: migrate old single-device tokens (created before this feature)
+  if (!Array.isArray(tokenData.devices)) {
+    tokenData.devices = tokenData.device ? [tokenData.device] : [];
+  }
+  if (tokenData.deviceLimit === undefined || tokenData.deviceLimit === null) {
+    tokenData.deviceLimit = 1;
+  }
+
+  const isUnlimited = tokenData.deviceLimit === 'unlimited';
+  const alreadyKnown = tokenData.devices.includes(currentDevice);
+
+  if (!isUnlimited && !alreadyKnown && tokenData.devices.length >= tokenData.deviceLimit) {
+    console.log(`[DEVICE LIMIT REACHED] token=${userToken.slice(0,8)}... limit=${tokenData.deviceLimit}`);
     return errorM3U(
-      '🔒 Token Locked to Another Device',
-      'This URL cannot be used on multiple devices',
+      '🔒 Device Limit Reached',
+      `This token allows only ${tokenData.deviceLimit} device(s)`,
       commonHeaders
     );
+  }
+
+  if (!alreadyKnown) {
+    tokenData.devices.push(currentDevice);
+    tokenData.lockedAt = now;
+    tokenData.lockedUA = (request.headers.get('user-agent') || '').substring(0, 100);
+    tokenData.firstUseIP = tokenData.firstUseIP || ip;
+    console.log(`[DEVICE ADDED] token=${userToken.slice(0,8)}... count=${tokenData.devices.length}/${isUnlimited ? '∞' : tokenData.deviceLimit}`);
   }
 
   tokenData.fetchCount = (tokenData.fetchCount || 0) + 1;
