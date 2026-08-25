@@ -32,16 +32,15 @@ const CHANNEL_RENAME_MAP = {
 };
 
 // ============================================================
-//  GROUP HIDE LIST — inn groups ke saare channels hide honge
-//  (original group-title daalo, rename se pehle wala naam)
+//  GROUP HIDE LIST — inn group-titles wale channels hide honge
+//  (PARTIAL match hota hai — group-title me ye text kahin bhi
+//   ho to wo group hide ho jayega, case-insensitive)
 // ============================================================
 const GROUP_HIDE_LIST = [
-  // 'Adult',
-  // 'PPV',
-  // 'GroupNameYahaan',
   'MC OTHER COPY PASTER',
   'MAKABOSRA COPY PASTER KA',
   'MAKICHUT COPY PASTER KI',
+  'FUCK OF STREALERS',
 ];
 
 // ============================================================
@@ -278,7 +277,7 @@ function filterVodEntries(content) {
 }
 
 // ============================================================
-//  CHECK IF ENTRY'S GROUP IS HIDDEN
+//  CHECK IF ENTRY'S GROUP IS HIDDEN  (PARTIAL, case-insensitive)
 // ============================================================
 function isHiddenGroup(extinfLine) {
   if (GROUP_HIDE_LIST.length === 0) return false;
@@ -287,7 +286,7 @@ function isHiddenGroup(extinfLine) {
   if (!groupMatch) return false;
 
   const groupTitle = groupMatch[1].trim().toLowerCase();
-  return GROUP_HIDE_LIST.some(g => g.trim().toLowerCase() === groupTitle);
+  return GROUP_HIDE_LIST.some(g => groupTitle.includes(g.trim().toLowerCase()));
 }
 
 // ============================================================
