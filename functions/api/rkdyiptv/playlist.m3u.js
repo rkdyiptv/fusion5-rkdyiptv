@@ -234,12 +234,17 @@ function generateRandomToken() {
 // ============================================================
 //  STALKER PORTAL
 // ============================================================
-function getStalkerHeaders(portalConfig, token = null) {
+const MAG_MODELS = ['MAG250', 'MAG254', 'MAG270'];
+
+// portalId -> model that worked last time (so we don't re-try all 3 every time)
+const modelCache = new Map();
+
+function getStalkerHeaders(portalConfig, token = null, model = 'MAG250') {
   const h = {
     'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 1812 Safari/533.3',
     'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9',
-    'X-User-Agent': 'Model: MAG250; Link: WiFi',
+    'X-User-Agent': `Model: ${model}; Link: WiFi`,
     'Cookie': `mac=${portalConfig.mac}; stb_lang=en; timezone=${portalConfig.timezone};`,
     'Referer': `${portalConfig.portalUrl}/c/`,
   };
@@ -247,25 +252,42 @@ function getStalkerHeaders(portalConfig, token = null) {
   return h;
 }
 
+async function handshakeWithModel(portalConfig, model) {
+  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=handshake&prehash=0&token=&JsHttpRequest=1-xml`;
+  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig, null, model) });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { return null; }
+  return data.js?.token || null;
+}
+
+// Tries MAG250 → MAG254 → MAG270 (known-working model first if we've seen
+// this portal before) and returns { token, model } from whichever succeeds.
 async function getStalkerToken(portalConfig, portalId) {
   const now = Date.now();
   const cached = authTokenCache.get(portalId);
-  if (cached && (now - cached.time) < STALKER_TOKEN_DURATION) return cached.token;
+  if (cached && (now - cached.time) < STALKER_TOKEN_DURATION) return cached;
 
-  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=handshake&prehash=0&token=&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers: getStalkerHeaders(portalConfig) });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error('Handshake failed'); }
-  if (!data.js?.token) throw new Error('No token');
+  const knownModel = modelCache.get(portalId);
+  const modelsToTry = knownModel
+    ? [knownModel, ...MAG_MODELS.filter(m => m !== knownModel)]
+    : MAG_MODELS;
 
-  authTokenCache.set(portalId, { token: data.js.token, time: now });
-  return data.js.token;
+  for (const model of modelsToTry) {
+    const token = await handshakeWithModel(portalConfig, model);
+    if (token) {
+      modelCache.set(portalId, model);
+      const session = { token, model, time: now };
+      authTokenCache.set(portalId, session);
+      return session;
+    }
+  }
+  throw new Error('Handshake failed on all device models (MAG250/254/270)');
 }
 
-async function setupProfile(portalConfig, token) {
-  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=get_profile&hd=1&sn=${portalConfig.serialNo}&stb_type=MAG250&client_type=STB&image_version=218&video_out=hdmi&device_id=${portalConfig.deviceId}&device_id2=${portalConfig.deviceId2}&hw_version=1.7-BD-00&not_valid_token=0&timestamp=${Math.floor(Date.now()/1000)}&JsHttpRequest=1-xml`;
-  await fetch(url, { headers: getStalkerHeaders(portalConfig, token) });
+async function setupProfile(portalConfig, session) {
+  const url = `${portalConfig.portalUrl}/server/load.php?type=stb&action=get_profile&hd=1&sn=${portalConfig.serialNo}&stb_type=${session.model}&client_type=STB&image_version=218&video_out=hdmi&device_id=${portalConfig.deviceId}&device_id2=${portalConfig.deviceId2}&hw_version=1.7-BD-00&not_valid_token=0&timestamp=${Math.floor(Date.now()/1000)}&JsHttpRequest=1-xml`;
+  await fetch(url, { headers: getStalkerHeaders(portalConfig, session.token, session.model) });
 }
 
 // ============================================================
@@ -432,15 +454,15 @@ export async function onRequest(context) {
     const portalConfig = resolved.config;
 
     try {
-      let token = await getStalkerToken(portalConfig, resolved.id);
-      await setupProfile(portalConfig, token);
-      let realUrl = await getRealStreamUrl(portalConfig, token, channelId);
+      let session = await getStalkerToken(portalConfig, resolved.id);
+      await setupProfile(portalConfig, session);
+      let realUrl = await getRealStreamUrl(portalConfig, session.token, channelId);
 
       if (realUrl.includes('localhost') || !realUrl.startsWith('http')) {
         authTokenCache.delete(resolved.id);
-        token = await getStalkerToken(portalConfig, resolved.id);
-        await setupProfile(portalConfig, token);
-        realUrl = await getRealStreamUrl(portalConfig, token, channelId);
+        session = await getStalkerToken(portalConfig, resolved.id);
+        await setupProfile(portalConfig, session);
+        realUrl = await getRealStreamUrl(portalConfig, session.token, channelId);
       }
 
       console.log(`[STREAM OK] ID:${channelId} portal:${resolved.name}`);
@@ -558,14 +580,14 @@ export async function onRequest(context) {
 
     // ✅ Force fresh handshake — old cached tokens might not have profile setup
     authTokenCache.delete(resolved.id);
-    let token = await getStalkerToken(portalConfig, resolved.id);
-    await setupProfile(portalConfig, token);
+    let session = await getStalkerToken(portalConfig, resolved.id);
+    await setupProfile(portalConfig, session);
     
     // ✅ Extra: account_info call to fully authorize VOD session
     try {
       await fetch(
         `${portalConfig.portalUrl}/server/load.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`,
-        { headers: getStalkerHeaders(portalConfig, token) }
+        { headers: getStalkerHeaders(portalConfig, session.token, session.model) }
       );
     } catch (_) {}
     // ── LIVE TV data (cached per portal URL+MAC — prevents stale data) ──
@@ -579,8 +601,8 @@ export async function onRequest(context) {
     } else {
       try {
         [liveCatMap, liveChannels] = await Promise.all([
-          getCategories(portalConfig, token),
-          getChannels(portalConfig, token)
+          getCategories(portalConfig, session.token),
+          getChannels(portalConfig, session.token)
         ]);
         if (!Array.isArray(liveChannels) || liveChannels.length === 0)
           throw new Error('Empty live list');
@@ -594,11 +616,11 @@ export async function onRequest(context) {
       } catch (innerErr) {
         console.log(`[LIVE RETRY] ${innerErr.message}`);
         authTokenCache.delete(resolved.id);
-        token = await getStalkerToken(portalConfig, resolved.id);
-        await setupProfile(portalConfig, token);
+        session = await getStalkerToken(portalConfig, resolved.id);
+        await setupProfile(portalConfig, session);
         [liveCatMap, liveChannels] = await Promise.all([
-          getCategories(portalConfig, token),
-          getChannels(portalConfig, token)
+          getCategories(portalConfig, session.token),
+          getChannels(portalConfig, session.token)
         ]);
         liveCache.set(CACHE_KEY, {
           catMap: liveCatMap,
