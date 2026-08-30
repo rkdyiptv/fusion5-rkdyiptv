@@ -1,5 +1,5 @@
 // ============================================================
-//  RKDYIPTV — Shared Portal Storage Helpers
+//  RKDYIPTV — Shared Portal Storage Helpers (D1-backed)
 //  File: functions/_lib/portals.js
 //  Not a route itself (folder starts with "_") — imported by the
 //  portal API endpoints and by dashboard.js.
@@ -10,7 +10,6 @@
 // → Environment variables → add "PORTAL_PASSWORD" (for Production, and
 // Preview if you use it too). No code file needs to be touched or
 // redeployed to change it later.
-const PORTALS_KEY = 'portals:list';
 
 export function checkPortalPassword(provided, env) {
   const expected = env && env.PORTAL_PASSWORD;
@@ -24,22 +23,48 @@ function generatePortalId() {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function rowToPortal(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    mac: row.mac,
+    serial: row.serial,
+    deviceId1: row.device_id1,
+    deviceId2: row.device_id2,
+    isDefault: !!row.is_default,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 // Returns the full array of portal objects (all fields, including
 // mac/serial/device ids). Only ever called from password-gated or
 // already-authenticated (admin cookie) code paths.
 export async function getPortals(env) {
-  const raw = await env.TOKENS.get(PORTALS_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
-  }
+  const { results } = await env.DB
+    .prepare('SELECT * FROM portals ORDER BY created_at ASC')
+    .all();
+  return (results || []).map(rowToPortal);
 }
 
+// Kept for backward-compat with any code that still imports savePortals
+// directly — writes the whole array back (used only by rare bulk paths).
 export async function savePortals(env, portals) {
-  await env.TOKENS.put(PORTALS_KEY, JSON.stringify(portals));
+  const stmts = portals.map(p =>
+    env.DB.prepare(
+      `INSERT INTO portals (id, name, url, mac, serial, device_id1, device_id2, is_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name=excluded.name, url=excluded.url, mac=excluded.mac, serial=excluded.serial,
+         device_id1=excluded.device_id1, device_id2=excluded.device_id2,
+         is_default=excluded.is_default, updated_at=excluded.updated_at`
+    ).bind(
+      p.id, p.name, p.url, p.mac, p.serial, p.deviceId1, p.deviceId2,
+      p.isDefault ? 1 : 0, p.createdAt || Date.now(), p.updatedAt || Date.now()
+    )
+  );
+  if (stmts.length) await env.DB.batch(stmts);
 }
 
 // Safe subset for public / unauthenticated display — no mac/serial/device ids.
@@ -51,7 +76,6 @@ export function toPublicPortal(p) {
 // updated in place; otherwise a new portal is created. If isDefault is set
 // true, every other portal's isDefault is cleared so only one is default.
 export async function upsertPortal(env, input) {
-  const portals = await getPortals(env);
   const now = Date.now();
 
   const clean = {
@@ -68,46 +92,51 @@ export async function upsertPortal(env, input) {
     throw new Error('Portal name and URL are required');
   }
 
-  let saved;
-  const existingIndex = input.id ? portals.findIndex(p => p.id === input.id) : -1;
+  const existing = input.id
+    ? await env.DB.prepare('SELECT * FROM portals WHERE id = ?').bind(input.id).first()
+    : null;
 
-  if (existingIndex >= 0) {
-    saved = { ...portals[existingIndex], ...clean, updatedAt: now };
-    portals[existingIndex] = saved;
-  } else {
-    saved = { id: generatePortalId(), ...clean, createdAt: now, updatedAt: now };
-    portals.push(saved);
+  const { results: countRows } = await env.DB.prepare('SELECT COUNT(*) as c FROM portals').all();
+  const isFirstEver = !existing && (countRows[0]?.c || 0) === 0;
+
+  const id = existing ? existing.id : generatePortalId();
+  const createdAt = existing ? existing.created_at : now;
+  const makeDefault = clean.isDefault || isFirstEver;
+
+  if (makeDefault) {
+    await env.DB.prepare('UPDATE portals SET is_default = 0').run();
   }
 
-  // If this portal is now default, unset default on all the others.
-  // If it's the very first portal ever added, make it default automatically
-  // so generate.js always has something pre-selected.
-  if (clean.isDefault || portals.length === 1) {
-    saved.isDefault = true;
-    for (const p of portals) {
-      if (p.id !== saved.id) p.isDefault = false;
-    }
-  }
+  await env.DB.prepare(
+    `INSERT INTO portals (id, name, url, mac, serial, device_id1, device_id2, is_default, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name=excluded.name, url=excluded.url, mac=excluded.mac, serial=excluded.serial,
+       device_id1=excluded.device_id1, device_id2=excluded.device_id2,
+       is_default=excluded.is_default, updated_at=excluded.updated_at`
+  ).bind(
+    id, clean.name, clean.url, clean.mac, clean.serial, clean.deviceId1, clean.deviceId2,
+    makeDefault ? 1 : 0, createdAt, now
+  ).run();
 
-  await savePortals(env, portals);
-  return saved;
+  const saved = await env.DB.prepare('SELECT * FROM portals WHERE id = ?').bind(id).first();
+  return rowToPortal(saved);
 }
 
 export async function deletePortal(env, id) {
-  const portals = await getPortals(env);
-  const index = portals.findIndex(p => p.id === id);
-  if (index === -1) return false;
+  const existing = await env.DB.prepare('SELECT * FROM portals WHERE id = ?').bind(id).first();
+  if (!existing) return false;
 
-  const wasDefault = portals[index].isDefault;
-  portals.splice(index, 1);
+  await env.DB.prepare('DELETE FROM portals WHERE id = ?').bind(id).run();
 
   // If we just deleted the default portal, promote the next one so
   // generate.js still has a default to pre-select.
-  if (wasDefault && portals.length > 0) {
-    portals[0].isDefault = true;
+  if (existing.is_default) {
+    const next = await env.DB.prepare('SELECT id FROM portals ORDER BY created_at ASC LIMIT 1').first();
+    if (next) {
+      await env.DB.prepare('UPDATE portals SET is_default = 1 WHERE id = ?').bind(next.id).run();
+    }
   }
-
-  await savePortals(env, portals);
   return true;
 }
 
@@ -138,12 +167,17 @@ export function toPortalConfig(portal) {
 // back to the first portal that exists. Returns null if no portals
 // have been added in Portal Manager yet.
 export async function resolvePortal(env, portalId) {
-  const portals = await getPortals(env);
-  if (portals.length === 0) return null;
-  const match =
-    (portalId && portals.find(p => p.id === portalId)) ||
-    portals.find(p => p.isDefault) ||
-    portals[0];
+  let match = null;
+  if (portalId) {
+    match = await env.DB.prepare('SELECT * FROM portals WHERE id = ?').bind(portalId).first();
+  }
+  if (!match) {
+    match = await env.DB.prepare('SELECT * FROM portals WHERE is_default = 1 LIMIT 1').first();
+  }
+  if (!match) {
+    match = await env.DB.prepare('SELECT * FROM portals ORDER BY created_at ASC LIMIT 1').first();
+  }
   if (!match) return null;
-  return { id: match.id, name: match.name, config: toPortalConfig(match) };
+  const portal = rowToPortal(match);
+  return { id: portal.id, name: portal.name, config: toPortalConfig(portal) };
 }
