@@ -6,6 +6,7 @@
 // ============================================================
 
 import { resolvePortal } from '../../_lib/portals.js';
+import { getToken, putToken } from '../../_lib/tokens.js';
 
 const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 
@@ -425,7 +426,7 @@ export async function onRequest(context) {
 
     const channelId = verify.id;
 
-    if (!env.TOKENS) return accessDeniedResponse(commonHeaders);
+    if (!env.DB) return accessDeniedResponse(commonHeaders);
     const resolved = await resolvePortal(env, verify.portalId);
     if (!resolved) return accessDeniedResponse(commonHeaders);
     const portalConfig = resolved.config;
@@ -459,8 +460,8 @@ export async function onRequest(context) {
   // ============================================================
   //  PLAYLIST — Token + Device Lock Check
   // ============================================================
-  if (!env.TOKENS) {
-    return errorM3U('⚠️ Server Misconfigured', 'KV binding missing', commonHeaders);
+  if (!env.DB) {
+    return errorM3U('⚠️ Server Misconfigured', 'D1 binding missing', commonHeaders);
   }
 
   if (!userToken) {
@@ -469,7 +470,7 @@ export async function onRequest(context) {
 
   let tokenData;
   try {
-    tokenData = await env.TOKENS.get(`token:${userToken}`, { type: 'json' });
+    tokenData = await getToken(env, userToken);
   } catch (err) {
     return errorM3U('⚠️ Storage Error', 'Try again later', commonHeaders);
   }
@@ -528,16 +529,20 @@ export async function onRequest(context) {
   }
 
   tokenData.fetchCount = (tokenData.fetchCount || 0) + 1;
+
+  // ✅ THROTTLE: sirf naya device add hone pe, ya har 10 min mein ek baar hi
+  // KV write karo — warna free-tier 1000 writes/day turant khatam ho jate hain.
+  const WRITE_THROTTLE_MS = 10 * 60 * 1000; // 10 minutes
+  const isNewDevice = !alreadyKnown;
+  const dueForWrite = !tokenData.lastUsed || (now - tokenData.lastUsed) > WRITE_THROTTLE_MS;
+
   tokenData.lastUsed = now;
 
-  const ttl = Math.ceil((tokenData.expiryAt - now) / 1000);
-  if (ttl > 0) {
+  if (isNewDevice || dueForWrite) {
     try {
-      await env.TOKENS.put(`token:${userToken}`, JSON.stringify(tokenData), {
-        expirationTtl: ttl,
-      });
+      await putToken(env, tokenData);
     } catch (err) {
-      console.error('[KV WRITE ERROR]', err.message);
+      console.error('[D1 WRITE ERROR]', err.message);
     }
   }
 
