@@ -3,6 +3,7 @@
 //  File: functions/api/admin/list-tokens.js
 //  Route: GET /api/admin/list-tokens
 // ============================================================
+import { listTokens } from '../../_lib/tokens.js';
 
 function checkAdminSession(request) {
   const cookie = request.headers.get('cookie') || '';
@@ -21,27 +22,14 @@ export async function onRequest(context) {
     });
   }
 
-  if (!env.TOKENS) {
-    return new Response(JSON.stringify({ success: false, error: 'KV binding TOKENS missing' }), {
+  if (!env.DB) {
+    return new Response(JSON.stringify({ success: false, error: 'D1 binding DB missing' }), {
       status: 500, headers: commonHeaders,
     });
   }
 
   try {
-    // List all keys with prefix "token:"
-    const list = await env.TOKENS.list({ prefix: 'token:', limit: 1000 });
-    
-    const tokens = [];
-    for (const key of list.keys) {
-      try {
-        const data = await env.TOKENS.get(key.name, { type: 'json' });
-        if (data) {
-          tokens.push(data);
-        }
-      } catch (e) {
-        console.error('[LIST TOKENS] Failed to fetch:', key.name);
-      }
-    }
+    const tokens = await listTokens(env);
 
     return new Response(JSON.stringify({ success: true, tokens }), {
       status: 200, headers: commonHeaders,
