@@ -4,6 +4,8 @@
 //  Route: POST /api/admin/delete-token
 // ============================================================
 
+import { deleteToken } from '../../_lib/tokens.js';
+
 function checkAdminSession(request) {
   const cookie = request.headers.get('cookie') || '';
   const match = cookie.match(/rkdy_admin=([^;]+)/);
@@ -26,8 +28,8 @@ export async function onRequest(context) {
     });
   }
 
-  if (!env.TOKENS) {
-    return new Response(JSON.stringify({ success: false, error: 'KV binding TOKENS missing' }), {
+  if (!env.DB) {
+    return new Response(JSON.stringify({ success: false, error: 'D1 binding DB missing' }), {
       status: 500, headers: commonHeaders,
     });
   }
@@ -42,7 +44,7 @@ export async function onRequest(context) {
       });
     }
 
-    await env.TOKENS.delete(`token:${token}`);
+    await deleteToken(env, token);
     console.log(`[ADMIN] Token deleted: ${token.slice(0,8)}...`);
 
     return new Response(JSON.stringify({ success: true }), {
