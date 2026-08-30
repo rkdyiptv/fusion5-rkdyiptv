@@ -608,27 +608,9 @@ export async function onRequest(context) {
       }
     }
 
-    // ── VOD data (cached per portal URL+MAC — prevents stale data) ──
-    let allMovies = [];
-    const cachedVODEntry = vodCache.get(CACHE_KEY);
-
-    if (cachedVODEntry && (cacheNow - cachedVODEntry.time) < VOD_CACHE_DURATION) {
-      allMovies = cachedVODEntry.movies;
-      console.log(`[VOD CACHE HIT] ${allMovies.length} movies | portal:${resolved.name}`);
-    } else {
-      try {
-        const vodCatMap = await getVODCategories(portalConfig, token);
-        console.log(`[VOD] Found ${Object.keys(vodCatMap).length} categories | portal:${resolved.name}`);
-        allMovies = await getAllVOD(portalConfig, token, vodCatMap);
-        if (allMovies.length > 0) {
-          vodCache.set(CACHE_KEY, { movies: allMovies, time: cacheNow });
-        }
-        console.log(`[VOD FRESH] ${allMovies.length} movies | portal:${resolved.name}`);
-      } catch (err) {
-  console.error('[VOD ERROR]', err.message);
-  allMovies = [];
-      }
-    }
+    // ── VOD removed — playlist ab sirf Live TV serve karta hai ──
+    // (Subrequest limit / server load kam karne ke liye VOD fetching hataya gaya)
+    const allMovies = [];
 
     // ── BUILD M3U (fresh every request) ──
     let m3u = '#EXTM3U x-tvg-url="" tvg-shift=0 refresh="1380"\n';
