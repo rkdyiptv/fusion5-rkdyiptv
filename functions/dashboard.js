@@ -20,7 +20,7 @@ export async function onRequest(context) {
     return Response.redirect(new URL('/admin', request.url).toString(), 302);
   }
 
-  const portals = env.TOKENS ? await getPortals(env) : [];
+  const portals = env.DB ? await getPortals(env) : [];
   const portalsJson = JSON.stringify(portals).replace(/</g, '\\u003c');
 
   const html = `<!DOCTYPE html>
