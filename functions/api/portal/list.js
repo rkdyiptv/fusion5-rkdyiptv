@@ -17,8 +17,8 @@ export async function onRequest(context) {
     });
   }
 
-  if (!env.TOKENS) {
-    return new Response(JSON.stringify({ success: false, error: 'KV binding TOKENS missing' }), {
+  if (!env.DB) {
+    return new Response(JSON.stringify({ success: false, error: 'D1 binding DB missing' }), {
       status: 500, headers: commonHeaders,
     });
   }
