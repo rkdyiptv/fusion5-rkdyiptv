@@ -4,6 +4,7 @@
 //  Route: POST /api/admin/create-token
 // ============================================================
 import { getPortals } from '../../_lib/portals.js';
+import { putToken } from '../../_lib/tokens.js';
 
 function checkAdminSession(request) {
   const cookie = request.headers.get('cookie') || '';
@@ -39,8 +40,8 @@ export async function onRequest(context) {
     });
   }
 
-  if (!env.TOKENS) {
-    return new Response(JSON.stringify({ success: false, error: 'KV binding TOKENS missing' }), {
+  if (!env.DB) {
+    return new Response(JSON.stringify({ success: false, error: 'D1 binding DB missing' }), {
       status: 500, headers: commonHeaders,
     });
   }
@@ -100,10 +101,7 @@ export async function onRequest(context) {
       portalName: resolvedPortal ? resolvedPortal.name : null,
     };
 
-    const ttl = Math.ceil(durationMs / 1000);
-    await env.TOKENS.put(`token:${tokenId}`, JSON.stringify(tokenData), {
-      expirationTtl: ttl,
-    });
+    await putToken(env, tokenData);
 
     console.log(`[ADMIN] Token created: ${tokenId.slice(0,8)}... duration=${hours}h devices=${deviceLimit} portal=${resolvedPortal ? resolvedPortal.name : 'none'}`);
 
