@@ -18,7 +18,7 @@ SITE_NAME = "RKDYIPTV"
 # Tokens + portals ab D1 mein hain (neeche).
 [[kv_namespaces]]
 binding = "TOKENS"
-id = "fbe964428afb47a89198bb2f39269841"
+id = "9f94eca637a043bea93306fc92038c77"
 
 # ── D1 Database Binding (Default/Production) ──
 # Pehle create karo: wrangler d1 create rkdyiptv-db
@@ -26,7 +26,7 @@ id = "fbe964428afb47a89198bb2f39269841"
 [[d1_databases]]
 binding = "DB"
 database_name = "rkdyiptv-db"
-database_id = "d1ca9d1a-a23c-48f1-9d26-7b3132cbc2af"
+database_id = "10819cd5-e5e0-4091-b036-ec3cd2169c67"
 
 # ============================================================
 #  PREVIEW ENVIRONMENT
@@ -37,12 +37,12 @@ SITE_NAME = "RKDYIPTV-Preview"
 
 [[env.preview.kv_namespaces]]
 binding = "TOKENS"
-id = "fbe964428afb47a89198bb2f39269841"
+id = "9f94eca637a043bea93306fc92038c77"
 
 [[env.preview.d1_databases]]
 binding = "DB"
 database_name = "rkdyiptv-db"
-database_id = "d1ca9d1a-a23c-48f1-9d26-7b3132cbc2af"
+database_id = "10819cd5-e5e0-4091-b036-ec3cd2169c67"
 
 # ============================================================
 #  PRODUCTION ENVIRONMENT
@@ -53,9 +53,9 @@ SITE_NAME = "RKDYIPTV"
 
 [[env.production.kv_namespaces]]
 binding = "TOKENS"
-id = "fbe964428afb47a89198bb2f39269841"
+id = "9f94eca637a043bea93306fc92038c77"
 
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "rkdyiptv-db"
-database_id = "d1ca9d1a-a23c-48f1-9d26-7b3132cbc2af"
+database_id = "10819cd5-e5e0-4091-b036-ec3cd2169c67"
