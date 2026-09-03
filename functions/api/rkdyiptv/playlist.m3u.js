@@ -64,7 +64,7 @@ function checkAccess(request) {
   const referer = request.headers.get('referer') || '';
 
   const iptvApps = [
-    'tivi mate', 'vlc', 'kodi', 'tivimate', 'ott navigator', 'ott',
+    'tivi mate', 'nsplayer', 'ns player', 'vlc', 'kodi', 'tivimate', 'ott navigator', 'ott',
     'iptv smarters', 'iptv', 'gse', 'perfect player',
     'perfect', 'televizo', 'exoplayer', 'okhttp',
     'python', 'curl', 'wget', 'dalvik', 'lavf',
