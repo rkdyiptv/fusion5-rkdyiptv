@@ -64,7 +64,7 @@ function checkAccess(request) {
   const referer = request.headers.get('referer') || '';
 
   const iptvApps = [
-    'tivi mate', 'nsplayer', 'ns player', 'vlc', 'kodi', 'tivimate', 'ott navigator', 'ott',
+    'tivi mate', 'vlc', 'kodi', 'tivimate', 'ott navigator', 'ott',
     'iptv smarters', 'iptv', 'gse', 'perfect player',
     'perfect', 'televizo', 'exoplayer', 'okhttp',
     'python', 'curl', 'wget', 'dalvik', 'lavf',
@@ -81,6 +81,7 @@ function checkAccess(request) {
     'iptvnator', 'electron', 'iptv navigator', 'iptvnavigator',
     'ottplayer', 'ott player', 'potplayer', 'mpc-hc', 'mpc-be',
     'kmplayer', 'gomplayer', 'mediaplayer', 'libmpv', 'player',
+    'ns player', 'nsplayer', 'ns-player',
   ];
 
   const smartTVs = [
